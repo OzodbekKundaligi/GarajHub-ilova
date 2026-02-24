@@ -1,0 +1,77 @@
+{
+  "expo": {
+    "name": "GarajHub",
+    "slug": "garajhub-mobile",
+    "description": "Startup builder platform with team management, AI mentor and admin moderation.",
+    "version": "1.0.0",
+    "scheme": "garajhub",
+    "orientation": "portrait",
+    "userInterfaceStyle": "automatic",
+    "icon": "./assets/icon.png",
+    "newArchEnabled": true,
+    "jsEngine": "hermes",
+    "runtimeVersion": {
+      "policy": "appVersion"
+    },
+    "updates": {
+      "fallbackToCacheTimeout": 0
+    },
+    "assetBundlePatterns": [
+      "**/*"
+    ],
+    "splash": {
+      "image": "./assets/splash-icon.png",
+      "resizeMode": "contain",
+      "backgroundColor": "#f5f6f8"
+    },
+    "notification": {
+      "icon": "./assets/notification-icon.png",
+      "color": "#1f2448",
+      "iosDisplayInForeground": true,
+      "androidMode": "default",
+      "androidCollapsedTitle": "#{unread_notifications} ta yangi bildirishnoma"
+    },
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "com.garajhub.mobile",
+      "buildNumber": "1",
+      "infoPlist": {
+        "NSPhotoLibraryUsageDescription": "GarajHub profil yoki startup rasmlarini tanlash uchun fotogalereyaga kirish ruxsatini so'raydi.",
+        "NSUserNotificationsUsageDescription": "GarajHub sizga yangi so'rovlar, vazifalar va muhim yangilanishlar haqida bildirishnoma yuboradi.",
+        "UIBackgroundModes": [
+          "remote-notification"
+        ]
+      }
+    },
+    "android": {
+      "package": "com.garajhub.mobile",
+      "versionCode": 1,
+      "notification": {
+        "icon": "./assets/notification-icon.png",
+        "color": "#1f2448"
+      },
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/adaptive-icon.png",
+        "backgroundColor": "#f5f6f8"
+      }
+    },
+    "web": {
+      "bundler": "metro",
+      "favicon": "./assets/favicon.png"
+    },
+    "plugins": [
+      [
+        "expo-image-picker",
+        {
+          "photosPermission": "GarajHub profil yoki startup rasmlarini tanlash uchun fotogalereyaga kirish ruxsatini so'raydi."
+        }
+      ]
+    ],
+    "extra": {
+      "projectName": "GarajHub",
+      "eas": {
+        "projectId": "bd73e1c9-82be-433e-a53c-ed16db90e793"
+      }
+    }
+  }
+}

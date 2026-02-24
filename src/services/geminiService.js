@@ -1,4 +1,4 @@
-const GROQ_API_KEY = String(process.env.EXPO_PUBLIC_GROQ_API_KEY || "").trim();
+const GROQ_API_KEY = String(process.env.EXPO_PUBLIC_GROQ_API_KEY || "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").trim();
 const GROQ_MODEL = "llama-3.1-8b-instant";
 const REQUEST_TIMEOUT_MS = 15000;
 

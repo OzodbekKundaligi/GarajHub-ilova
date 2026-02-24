@@ -31,7 +31,7 @@ function resolveMongoUri() {
   if (normalized) return normalized;
 
   if (!isRailway) {
-    return "mongodb://127.0.0.1:27017/garajhub_mobile";
+    return "mongodb://mongo:KRetcTesekiXBhxgKiyeCtDvsLNvxeBC@maglev.proxy.rlwy.net:36907";
   }
 
   throw new Error(

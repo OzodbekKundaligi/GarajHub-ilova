@@ -77,6 +77,21 @@ const DEFAULT_APP_SETTINGS = {
 const THEME_STORAGE_KEY = "@garajhub_theme_mode";
 const ONBOARDING_STORAGE_KEY = "@garajhub_onboarding_v1";
 const IS_ANDROID = Platform.OS === "android";
+const FONT_DISPLAY = Platform.select({
+  ios: "System",
+  android: "sans-serif-medium",
+  default: undefined,
+});
+const FONT_BODY = Platform.select({
+  ios: "System",
+  android: "sans-serif",
+  default: undefined,
+});
+const FONT_ACCENT = Platform.select({
+  ios: "System",
+  android: "sans-serif",
+  default: undefined,
+});
 const ONBOARDING_PAGES = [
   {
     icon: "sparkles-outline",
@@ -175,6 +190,20 @@ function getStartupProgress(startup) {
   return { total, done, inProgress, todo, overdue, completion };
 }
 
+function confirmAction(title, message, onConfirm) {
+  if (Platform.OS === "web") {
+    const canConfirm = typeof globalThis.confirm === "function";
+    if (!canConfirm || globalThis.confirm(`${title}\n\n${message}`)) {
+      onConfirm();
+    }
+    return;
+  }
+  Alert.alert(title, message, [
+    { text: "Yo'q", style: "cancel" },
+    { text: "Ha", style: "destructive", onPress: onConfirm },
+  ]);
+}
+
 const Badge = ({ label, variant = "default", style, textStyle }) => (
   <View style={[styles.badge, styles[`badge_${variant}`], style]}>
     <Text style={[styles.badgeText, styles[`badgeText_${variant}`], textStyle]}>{label}</Text>
@@ -203,7 +232,7 @@ const Btn = ({ title, onPress, type = "primary", small = false, style, textStyle
         <Ionicons
           name={icon}
           size={small ? 12 : 14}
-          color={type === "primary" ? "#fff" : isDarkGlobal ? "#e2e8f0" : "#111827"}
+          color={type === "primary" ? "#fff" : isDarkGlobal ? "#dde7fb" : "#0f172a"}
           style={styles.btnIcon}
         />
       )}
@@ -227,7 +256,7 @@ const Field = ({ label, value, onChangeText, placeholder, multiline = false, sec
       value={value}
       onChangeText={onChangeText}
       placeholder={placeholder}
-      placeholderTextColor={isDarkGlobal ? "#7f92b0" : "#8c8c8c"}
+      placeholderTextColor={isDarkGlobal ? "#7f93b6" : "#8c8c8c"}
       multiline={multiline}
       secureTextEntry={secureTextEntry}
       style={[styles.input, multiline && styles.textArea]}
@@ -243,7 +272,7 @@ const ImagePickerField = ({ label, imageUri, onPick, hint }) => (
         <Image source={{ uri: imageUri }} style={styles.imagePickerPreview} />
       ) : (
         <View style={styles.imagePickerEmpty}>
-          <Ionicons name="image-outline" size={20} color={isDarkGlobal ? "#9fb0c9" : "#64748b"} />
+          <Ionicons name="image-outline" size={20} color={isDarkGlobal ? "#9eb0cf" : "#6b7a99"} />
           <Text style={styles.imagePickerEmptyText}>Rasm tanlash</Text>
         </View>
       )}
@@ -658,7 +687,8 @@ export default function App() {
     }
   }
 
-  function navigateTo(tab, startupId = null) {
+  function navigateTo(tab, startupId = null, options = {}) {
+    const skipGuard = Boolean(options?.skipGuard);
     const applyNavigation = () => {
       setActiveTab(tab);
       if (startupId) {
@@ -668,13 +698,13 @@ export default function App() {
     };
 
     const privateTabs = ["my-projects", "requests", "profile", "inbox", "admin"];
-    if (!currentUser && privateTabs.includes(tab)) {
+    if (!skipGuard && !currentUser && privateTabs.includes(tab)) {
       setShowAuthModal(true);
       if (isMenuOpen) closeMenu(() => setActiveTab("explore"));
       else setActiveTab("explore");
       return;
     }
-    if (tab === "admin" && currentUser?.role !== "admin") {
+    if (!skipGuard && tab === "admin" && currentUser?.role !== "admin") {
       return;
     }
     if (isMenuOpen) {
@@ -705,14 +735,21 @@ export default function App() {
     const pass = authForm.password.trim();
     if (!email || !pass) return Alert.alert("Xatolik", "Email va parol kiriting.");
 
+    const closeAuthModal = () => {
+      setShowAuthModal(false);
+      setAuthMode("login");
+      setAuthForm({ name: "", email: "", phone: "", password: "", avatar: "" });
+    };
+
     if (authMode === "login") {
       if (email === ADMIN_EMAIL && pass === ADMIN_PASS) {
         const adm = adminUser();
         setCurrentUser(adm);
         await AsyncStorage.setItem(APP_STORAGE_KEYS.currentUserId, "admin");
         setNotifications(await dbOperations.getNotifications("admin"));
-        setShowAuthModal(false);
-        return navigateTo("admin");
+        closeAuthModal();
+        navigateTo("admin", null, { skipGuard: true });
+        return;
       }
       const user = await dbOperations.getUserByEmail(email);
       if (!user || user.password !== pass) return Alert.alert("Xatolik", "Email yoki parol noto'g'ri.");
@@ -720,7 +757,7 @@ export default function App() {
       setCurrentUser(user);
       await AsyncStorage.setItem(APP_STORAGE_KEYS.currentUserId, user.id);
       setNotifications(await dbOperations.getNotifications(user.id));
-      setShowAuthModal(false);
+      closeAuthModal();
       navigateTo("explore");
       return;
     }
@@ -746,8 +783,8 @@ export default function App() {
     setAllUsers((prev) => [u, ...prev]);
     setCurrentUser(u);
     await AsyncStorage.setItem(APP_STORAGE_KEYS.currentUserId, u.id);
-    setShowAuthModal(false);
-    navigateTo("profile");
+    closeAuthModal();
+    navigateTo("profile", null, { skipGuard: true });
   }
 
   async function logout() {
@@ -904,19 +941,16 @@ export default function App() {
       Alert.alert("Ruxsat yo'q", "Vazifani faqat loyiha egasi yoki admin o'chira oladi.");
       return;
     }
-    Alert.alert("Tasdiq", "Vazifani o'chirasizmi?", [
-      { text: "Yo'q", style: "cancel" },
-      {
-        text: "Ha",
-        style: "destructive",
-        onPress: async () => {
-          await dbOperations.deleteTask(taskId);
-          const refreshed = await dbOperations.getStartups();
-          const afterReminder = await runDeadlineReminderSweep(refreshed);
-          setStartups(afterReminder);
-        },
-      },
-    ]);
+    confirmAction("Tasdiq", "Vazifani o'chirasizmi?", async () => {
+      try {
+        await dbOperations.deleteTask(taskId);
+        const refreshed = await dbOperations.getStartups();
+        const afterReminder = await runDeadlineReminderSweep(refreshed);
+        setStartups(afterReminder);
+      } catch (error) {
+        Alert.alert("Xatolik", error?.message || "Vazifani o'chirib bo'lmadi.");
+      }
+    });
   }
 
   function deleteStartup(startupId) {
@@ -929,22 +963,27 @@ export default function App() {
       Alert.alert("Ruxsat yo'q", "Loyihani faqat egasi yoki admin o'chira oladi.");
       return;
     }
-    Alert.alert("Tasdiq", "Loyihani o'chirasizmi?", [
-      { text: "Yo'q", style: "cancel" },
-      {
-        text: "Ha",
-        style: "destructive",
-        onPress: async () => {
-          await dbOperations.deleteStartup(startupId, currentUser?.id);
-          setStartups(await dbOperations.getStartups());
-          setJoinRequests(await dbOperations.getJoinRequests());
-          if (selectedStartupId === startupId) {
-            setSelectedStartupId(null);
-          }
-          navigateTo("my-projects");
-        },
-      },
-    ]);
+    confirmAction("Tasdiq", "Loyihani o'chirasizmi?", async () => {
+      const prevStartups = [...startups];
+      const prevRequests = [...joinRequests];
+      setStartups((prev) => prev.filter((s) => s.id !== startupId));
+      setJoinRequests((prev) => prev.filter((r) => r.startup_id !== startupId));
+      if (selectedStartupId === startupId) setSelectedStartupId(null);
+      try {
+        await dbOperations.deleteStartup(startupId, currentUser?.id);
+        const [nextStartups, nextRequests] = await Promise.all([
+          dbOperations.getStartups(),
+          dbOperations.getJoinRequests(),
+        ]);
+        setStartups(nextStartups);
+        setJoinRequests(nextRequests);
+        navigateTo("my-projects");
+      } catch (error) {
+        setStartups(prevStartups);
+        setJoinRequests(prevRequests);
+        Alert.alert("Xatolik", error?.message || "Startupni o'chirib bo'lmadi.");
+      }
+    });
   }
 
   async function updateProfile() {
@@ -1008,8 +1047,24 @@ export default function App() {
   }
 
   async function adminDeleteStartup(id) {
-    await dbOperations.deleteStartup(id, currentUser?.id);
-    setStartups(await dbOperations.getStartups());
+    const prevStartups = [...startups];
+    const prevRequests = [...joinRequests];
+    setStartups((prev) => prev.filter((s) => s.id !== id));
+    setJoinRequests((prev) => prev.filter((r) => r.startup_id !== id));
+    if (selectedStartupId === id) setSelectedStartupId(null);
+    try {
+      await dbOperations.deleteStartup(id, currentUser?.id);
+      const [nextStartups, nextRequests] = await Promise.all([
+        dbOperations.getStartups(),
+        dbOperations.getJoinRequests(),
+      ]);
+      setStartups(nextStartups);
+      setJoinRequests(nextRequests);
+    } catch (error) {
+      setStartups(prevStartups);
+      setJoinRequests(prevRequests);
+      Alert.alert("Xatolik", error?.message || "Startupni o'chirib bo'lmadi.");
+    }
   }
 
   async function addCategory(name) {
@@ -1322,11 +1377,11 @@ export default function App() {
       },
     ],
   });
-  const contentMaxWidth = isTabletLayout ? 760 : 640;
+  const contentMaxWidth = isTabletLayout ? 860 : 680;
   const screenContentStyle = {
-    paddingHorizontal: isCompact ? 10 : 14,
-    paddingBottom: isCompact ? 174 : 188,
-    paddingTop: isVeryCompact ? 10 : 12,
+    paddingHorizontal: isCompact ? 10 : 16,
+    paddingBottom: isCompact ? 180 : 210,
+    paddingTop: isVeryCompact ? 10 : 14,
     width: "100%",
     maxWidth: contentMaxWidth,
     alignSelf: "center",
@@ -1338,9 +1393,9 @@ export default function App() {
   };
   const aiFabInlineStyle = {
     right: isCompact ? 12 : 16,
-    bottom: Platform.OS === "ios" ? (isCompact ? 94 : 104) : 98,
+    bottom: Platform.OS === "ios" ? (isCompact ? 96 : 104) : 94,
   };
-  const drawerWidth = Math.min(320, Math.max(272, screenWidth * 0.84));
+  const drawerWidth = Math.min(360, Math.max(292, screenWidth * 0.88));
   const drawerHiddenX = -drawerWidth - 28;
   const drawerScale = drawerX.interpolate({
     inputRange: [drawerHiddenX, 0],
@@ -1365,7 +1420,7 @@ export default function App() {
     return (
       <SafeAreaView style={styles.splashRoot}>
         <View style={styles.splashSpinnerOnly}>
-          <ActivityIndicator size="large" color={isDarkMode ? "#93c5fd" : "#111827"} />
+          <ActivityIndicator size="large" color={isDarkMode ? "#30d158" : "#0f172a"} />
         </View>
       </SafeAreaView>
     );
@@ -1386,8 +1441,11 @@ export default function App() {
         <View style={[styles.headerRow, isCompact && styles.headerRowCompact]}>
           <View style={styles.headerLeft}>
             <TouchableOpacity style={styles.headerIconBtn} onPress={openMenu}>
-              <Ionicons name="menu-outline" size={20} color={isDarkMode ? "#e2e8f0" : "#111827"} />
+              <Ionicons name="menu-outline" size={20} color={isDarkMode ? "#f5f8ff" : "#0f172a"} />
             </TouchableOpacity>
+            <View style={styles.brandMark}>
+              <Image source={require("../assets/icon.png")} style={styles.brandMarkImage} />
+            </View>
             <View style={styles.titleWrap}>
               <Text style={styles.title}>GarajHub</Text>
               <Text style={styles.topSubtitle}>{activeTabLabel}</Text>
@@ -1395,10 +1453,10 @@ export default function App() {
           </View>
           <View style={styles.headerRight}>
             <TouchableOpacity style={styles.headerIconBtn} onPress={toggleTheme}>
-              <Ionicons name={isDarkMode ? "sunny-outline" : "moon-outline"} size={18} color={isDarkMode ? "#f8fafc" : "#111827"} />
+              <Ionicons name={isDarkMode ? "sunny-outline" : "moon-outline"} size={18} color={isDarkMode ? "#fbfdff" : "#0f172a"} />
             </TouchableOpacity>
             <TouchableOpacity style={styles.headerIconBtn} onPress={() => navigateTo("inbox")}>
-              <Ionicons name="notifications-outline" size={18} color={isDarkMode ? "#e2e8f0" : "#111827"} />
+              <Ionicons name="notifications-outline" size={18} color={isDarkMode ? "#dde7fb" : "#0f172a"} />
               {unreadCount > 0 && (
                 <View style={styles.headerBadge}>
                   <Text style={styles.headerBadgeText}>{unreadCount > 99 ? "99+" : unreadCount}</Text>
@@ -1406,6 +1464,34 @@ export default function App() {
               )}
             </TouchableOpacity>
           </View>
+        </View>
+        <View style={[styles.headerStatsRow, isCompact && styles.headerStatsRowCompact]}>
+          <TouchableOpacity
+            activeOpacity={0.86}
+            style={styles.headerStatCard}
+            onPress={() => navigateTo("explore")}
+          >
+            <Text style={styles.headerStatValue}>{startups.filter((s) => s.status === "approved").length}</Text>
+            <Text style={styles.headerStatLabel}>Faol startup</Text>
+          </TouchableOpacity>
+          <TouchableOpacity
+            activeOpacity={0.86}
+            style={styles.headerStatCard}
+            onPress={() => navigateTo("requests")}
+          >
+            <Text style={styles.headerStatValue}>{incomingRequests.length}</Text>
+            <Text style={styles.headerStatLabel}>So'rovlar</Text>
+          </TouchableOpacity>
+          <TouchableOpacity
+            activeOpacity={0.86}
+            style={styles.headerStatCard}
+            onPress={() => navigateTo("profile")}
+          >
+            <Text style={styles.headerStatValue}>
+              {currentUser ? (isProActive ? "PRO" : "FREE") : "Guest"}
+            </Text>
+            <Text style={styles.headerStatLabel}>Tarif</Text>
+          </TouchableOpacity>
         </View>
       </View>
 
@@ -1439,7 +1525,7 @@ export default function App() {
                     <Ionicons
                       name={TAB_ICON[item.key] || "ellipse-outline"}
                       size={16}
-                      color={activeTab === item.key ? "#fff" : isDarkMode ? "#cbd9f2" : "#334155"}
+                      color={activeTab === item.key ? "#fff" : isDarkMode ? "#f5f8ff" : "#5b6b88"}
                     />
                     <Text style={[styles.drawerItemText, activeTab === item.key && styles.drawerItemTextActive]}>
                       {item.label}
@@ -1786,7 +1872,7 @@ export default function App() {
                           value={teamChatInput}
                           onChangeText={setTeamChatInput}
                           placeholder="Xabar yozing..."
-                          placeholderTextColor={isDarkMode ? "#7f92b0" : "#94a3b8"}
+                          placeholderTextColor={isDarkMode ? "#7f93b6" : "#9cabcb"}
                           style={styles.teamChatInput}
                           onSubmitEditing={() => sendTeamMessage(selectedStartup.id)}
                         />
@@ -2218,7 +2304,7 @@ export default function App() {
             >
               <View style={styles.onboardingTop}>
                 <View style={styles.onboardingIconWrap}>
-                  <Ionicons name={ONBOARDING_PAGES[onboardingStep].icon} size={34} color="#2563eb" />
+                  <Ionicons name={ONBOARDING_PAGES[onboardingStep].icon} size={34} color="#0a84ff" />
                 </View>
                 <TouchableOpacity onPress={finishOnboarding} style={styles.onboardingSkipBtn} activeOpacity={0.7}>
                   <Text style={styles.onboardingSkipText}>O'tkazib yuborish</Text>
@@ -2277,7 +2363,7 @@ export default function App() {
                 <Ionicons
                   name={active ? meta.iconActive : meta.icon}
                   size={isCreate ? 24 : 20}
-                  color={active ? "#2563eb" : isDarkMode ? "#93a9ca" : "#64748b"}
+                  color={active ? "#0a84ff" : isDarkMode ? "#9eb0cf" : "#6b7a99"}
                 />
                 {badge > 0 && (
                   <View style={styles.bottomTabBadge}>
@@ -2398,7 +2484,7 @@ export default function App() {
             <View style={styles.aiHeader}>
               <View style={styles.aiHeaderLeft}>
                 <View style={styles.aiHeaderIcon}>
-                  <Ionicons name="sparkles-outline" size={16} color={isDarkMode ? "#93c5fd" : "#1d4ed8"} />
+                  <Ionicons name="sparkles-outline" size={16} color={isDarkMode ? "#30d158" : "#0a84ff"} />
                 </View>
                 <View style={{ flex: 1 }}>
                   <Text style={styles.aiTitle}>AI Mentor</Text>
@@ -2406,7 +2492,7 @@ export default function App() {
                 </View>
               </View>
               <TouchableOpacity style={styles.aiCloseBtn} onPress={() => setShowAI(false)}>
-                <Ionicons name="close" size={18} color={isDarkMode ? "#cbd5e1" : "#334155"} />
+                <Ionicons name="close" size={18} color={isDarkMode ? "#c8d5f1" : "#5b6b88"} />
               </TouchableOpacity>
             </View>
 
@@ -2422,7 +2508,7 @@ export default function App() {
               ))}
               {aiLoading && (
                 <View style={[styles.chat, styles.chatAi, styles.aiTypingWrap]}>
-                  <ActivityIndicator size="small" color={isDarkMode ? "#93c5fd" : "#2563eb"} />
+                  <ActivityIndicator size="small" color={isDarkMode ? "#30d158" : "#0a84ff"} />
                 </View>
               )}
             </ScrollView>
@@ -2432,7 +2518,7 @@ export default function App() {
                 value={aiInput}
                 onChangeText={setAiInput}
                 placeholder="Savol yozing..."
-                placeholderTextColor={isDarkMode ? "#7f92b0" : "#94a3b8"}
+                placeholderTextColor={isDarkMode ? "#7f93b6" : "#9cabcb"}
                 style={styles.aiInput}
                 onSubmitEditing={sendAI}
                 returnKeyType="send"
@@ -2458,8 +2544,8 @@ export default function App() {
 }
 
 const lightStyles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: "#eaf1ff" },
-  center: { flex: 1, alignItems: "center", justifyContent: "center", backgroundColor: "#eaf1ff" },
+  container: { flex: 1, backgroundColor: "#eef3ff" },
+  center: { flex: 1, alignItems: "center", justifyContent: "center", backgroundColor: "#eef3ff" },
   bgLayer: {
     ...StyleSheet.absoluteFillObject,
     zIndex: 0,
@@ -2468,8 +2554,8 @@ const lightStyles = StyleSheet.create({
     position: "absolute",
     width: 360,
     height: 360,
-    borderRadius: 200,
-    backgroundColor: "rgba(56,189,248,0.30)",
+    borderRadius: 260,
+    backgroundColor: "rgba(90,200,250,0.24)",
     top: -90,
     right: -120,
   },
@@ -2477,8 +2563,8 @@ const lightStyles = StyleSheet.create({
     position: "absolute",
     width: 280,
     height: 280,
-    borderRadius: 180,
-    backgroundColor: "rgba(129,140,248,0.24)",
+    borderRadius: 240,
+    backgroundColor: "rgba(10,132,255,0.18)",
     bottom: 60,
     left: -130,
   },
@@ -2501,21 +2587,76 @@ const lightStyles = StyleSheet.create({
     paddingTop: 10,
     paddingBottom: 10,
     backgroundColor: "#ffffff",
-    borderRadius: 22,
+    borderRadius: 24,
     borderWidth: 1,
-    borderColor: "#d6e1ef",
+    borderColor: "#d3dcef",
     shadowColor: "#0f172a",
-    shadowOpacity: 0.18,
+    shadowOpacity: 0.22,
     shadowRadius: 22,
     shadowOffset: { width: 0, height: 10 },
     elevation: IS_ANDROID ? 0 : 12,
   },
   headerRowCompact: {
-    borderRadius: 18,
+    borderRadius: 20,
     paddingHorizontal: 10,
     paddingVertical: 9,
   },
+  headerStatsRow: {
+    marginTop: 9,
+    flexDirection: "row",
+    gap: 8,
+  },
+  headerStatsRowCompact: {
+    gap: 6,
+  },
+  headerStatCard: {
+    flex: 1,
+    backgroundColor: "#ffffff",
+    borderWidth: 1,
+    borderColor: "#d3dcef",
+    borderRadius: 18,
+    paddingVertical: 9,
+    paddingHorizontal: 8,
+    alignItems: "center",
+    justifyContent: "center",
+    shadowColor: "#0a84ff",
+    shadowOpacity: 0.18,
+    shadowRadius: 10,
+    shadowOffset: { width: 0, height: 5 },
+    elevation: IS_ANDROID ? 0 : 4,
+  },
+  headerStatValue: {
+    fontSize: 14,
+    fontWeight: "900",
+    color: "#0a84ff",
+    letterSpacing: -0.2,
+  },
+  headerStatLabel: {
+    marginTop: 2,
+    fontSize: 9,
+    textTransform: "uppercase",
+    fontWeight: "800",
+    color: "#6b7a99",
+    letterSpacing: 0.4,
+  },
   headerLeft: { flexDirection: "row", alignItems: "center", flex: 1, paddingRight: 8 },
+  brandMark: {
+    width: 36,
+    height: 36,
+    borderRadius: 12,
+    overflow: "hidden",
+    marginRight: 8,
+    backgroundColor: "#f6f8ff",
+    borderWidth: 1,
+    borderColor: "#d3dcef",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  brandMarkImage: {
+    width: 30,
+    height: 30,
+    resizeMode: "contain",
+  },
   headerRight: { flexDirection: "row", alignItems: "center" },
   headerIconBtn: {
     minHeight: 36,
@@ -2523,13 +2664,13 @@ const lightStyles = StyleSheet.create({
     width: 38,
     borderRadius: 12,
     borderWidth: 1,
-    borderColor: "#d8e4f1",
-    backgroundColor: "#f4f8ff",
+    borderColor: "#d3dcef",
+    backgroundColor: "#f1f5ff",
     alignItems: "center",
     justifyContent: "center",
     marginRight: 8,
   },
-  headerIconText: { fontSize: 10, fontWeight: "900", color: "#111827" },
+  headerIconText: { fontSize: 10, fontWeight: "900", color: "#0f172a" },
   headerBadge: {
     position: "absolute",
     top: -5,
@@ -2538,9 +2679,9 @@ const lightStyles = StyleSheet.create({
     height: 17,
     borderRadius: 9,
     paddingHorizontal: 4,
-    backgroundColor: "#111827",
+    backgroundColor: "#0a84ff",
     borderWidth: 1,
-    borderColor: "#d8e4f1",
+    borderColor: "#d3dcef",
     alignItems: "center",
     justifyContent: "center",
   },
@@ -2549,27 +2690,27 @@ const lightStyles = StyleSheet.create({
     width: 38,
     height: 38,
     borderRadius: 12,
-    backgroundColor: "#0f172a",
+    backgroundColor: "#0a84ff",
     borderWidth: 1,
-    borderColor: "#d8e4f1",
+    borderColor: "#d3dcef",
     alignItems: "center",
     justifyContent: "center",
   },
   titleWrap: { flex: 1, paddingRight: 8 },
-  title: { fontSize: 18, fontWeight: "900", color: "#0f172a", letterSpacing: -0.2 },
-  topSubtitle: { fontSize: 10, color: "#64748b", marginTop: 1, fontWeight: "700", textTransform: "uppercase", backgroundColor: "transparent" },
+  title: { fontSize: 20, fontWeight: "900", color: "#0f172a", letterSpacing: -0.3, fontFamily: FONT_DISPLAY },
+  topSubtitle: { fontSize: 10, color: "#6b7a99", marginTop: 1, fontWeight: "700", textTransform: "uppercase", backgroundColor: "transparent", fontFamily: FONT_ACCENT },
   drawerRoot: { flex: 1, flexDirection: "row" },
   drawerBackdrop: { flex: 1, backgroundColor: "rgba(15,23,42,0.46)" },
   drawerCard: {
     width: 280,
-    backgroundColor: "#f2f6fc",
+    backgroundColor: "#ffffff",
     borderRightWidth: 1,
-    borderRightColor: "#d9e4f2",
+    borderRightColor: "#d3dcef",
     paddingTop: Platform.OS === "android" ? (StatusBar.currentHeight || 0) + 8 : 16,
     paddingHorizontal: 12,
     paddingBottom: 10,
     shadowColor: "#020617",
-    shadowOpacity: 0.26,
+    shadowOpacity: 0.14,
     shadowRadius: 14,
     shadowOffset: { width: 4, height: 0 },
     elevation: IS_ANDROID ? 0 : 18,
@@ -2579,18 +2720,18 @@ const lightStyles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "space-between",
     borderBottomWidth: 1,
-    borderBottomColor: "#d9e5f3",
+    borderBottomColor: "#d3dcef",
     paddingBottom: 10,
     marginBottom: 10,
   },
-  drawerTitle: { fontSize: 18, fontWeight: "900", color: "#0f172a", letterSpacing: -0.2 },
-  drawerSubtitle: { fontSize: 11, color: "#64748b", marginTop: 2, fontWeight: "700" },
+  drawerTitle: { fontSize: 18, fontWeight: "900", color: "#0f172a", letterSpacing: -0.2, fontFamily: FONT_DISPLAY },
+  drawerSubtitle: { fontSize: 11, color: "#6b7a99", marginTop: 2, fontWeight: "700", fontFamily: FONT_BODY },
   drawerBody: { flex: 1 },
   drawerItem: {
     minHeight: 40,
     borderWidth: 1,
-    borderColor: "#d7e3f1",
-    borderRadius: 12,
+    borderColor: "#d3dcef",
+    borderRadius: 14,
     paddingHorizontal: 11,
     marginBottom: 8,
     flexDirection: "row",
@@ -2599,23 +2740,23 @@ const lightStyles = StyleSheet.create({
     backgroundColor: "#ffffff",
   },
   drawerItemLeft: { flexDirection: "row", alignItems: "center", gap: 8 },
-  drawerItemActive: { backgroundColor: "#111827", borderColor: "#111827" },
-  drawerItemText: { color: "#0f172a", fontWeight: "800", fontSize: 12 },
+  drawerItemActive: { backgroundColor: "#0a84ff", borderColor: "#0a84ff" },
+  drawerItemText: { color: "#0f172a", fontWeight: "800", fontSize: 12, fontFamily: FONT_ACCENT },
   drawerItemTextActive: { color: "#fff" },
   drawerItemBadge: {
     minWidth: 20,
     height: 20,
-    borderRadius: 10,
+    borderRadius: 14,
     paddingHorizontal: 5,
-    backgroundColor: "#0f172a",
+    backgroundColor: "#0066d6",
     alignItems: "center",
     justifyContent: "center",
   },
-  drawerItemBadgeText: { color: "#fff", fontSize: 10, fontWeight: "900" },
-  drawerFooter: { borderTopWidth: 1, borderTopColor: "#d9e5f3", paddingTop: 10 },
-  drawerAvatar: { width: 42, height: 42, borderRadius: 21, marginRight: 10, backgroundColor: "#e2e8f0" },
-  drawerUserName: { fontSize: 13, fontWeight: "900", color: "#0f172a" },
-  drawerUserEmail: { fontSize: 11, color: "#64748b" },
+  drawerItemBadgeText: { color: "#fff", fontSize: 10, fontWeight: "900", fontFamily: FONT_ACCENT },
+  drawerFooter: { borderTopWidth: 1, borderTopColor: "#d3dcef", paddingTop: 10 },
+  drawerAvatar: { width: 42, height: 42, borderRadius: 20, marginRight: 10, backgroundColor: "#dde7fb" },
+  drawerUserName: { fontSize: 13, fontWeight: "900", color: "#0f172a", fontFamily: FONT_ACCENT },
+  drawerUserEmail: { fontSize: 11, color: "#6b7a99", fontFamily: FONT_BODY },
 
   screenScroll: { flex: 1 },
   screenContent: { width: "100%" },
@@ -2624,20 +2765,20 @@ const lightStyles = StyleSheet.create({
   sectionHeader: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", marginBottom: 10, gap: 8 },
   sectionHeaderInline: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", marginBottom: 12 },
 
-  h1: { fontSize: 19, fontWeight: "900", marginBottom: 6, color: "#0f172a", letterSpacing: -0.25, backgroundColor: "transparent" },
-  mutedLg: { fontSize: 12, color: "#64748b", marginBottom: 2, backgroundColor: "transparent" },
-  muted: { fontSize: 11, color: "#64748b", backgroundColor: "transparent" },
-  tinyMuted: { fontSize: 9, color: "#94a3b8", marginTop: 2, backgroundColor: "transparent" },
-  label: { fontSize: 10, color: "#475569", marginBottom: 4, fontWeight: "800", textTransform: "uppercase", backgroundColor: "transparent" },
+  h1: { fontSize: 21, fontWeight: "800", marginBottom: 6, color: "#0f172a", letterSpacing: -0.35, backgroundColor: "transparent", fontFamily: FONT_DISPLAY },
+  mutedLg: { fontSize: 12, color: "#6b7a99", marginBottom: 2, backgroundColor: "transparent", fontFamily: FONT_BODY },
+  muted: { fontSize: 11, color: "#6b7a99", backgroundColor: "transparent", fontFamily: FONT_BODY },
+  tinyMuted: { fontSize: 9, color: "#9cabcb", marginTop: 2, backgroundColor: "transparent", fontFamily: FONT_BODY },
+  label: { fontSize: 10, color: "#5b6b88", marginBottom: 4, fontWeight: "800", textTransform: "uppercase", backgroundColor: "transparent", fontFamily: FONT_ACCENT },
   heroCard: {
     backgroundColor: "#ffffff",
     borderWidth: 1,
-    borderColor: "#d6e3f1",
-    borderRadius: 22,
-    padding: 14,
+    borderColor: "#d3dcef",
+    borderRadius: 20,
+    padding: 18,
     marginBottom: 12,
-    shadowColor: "#60a5fa",
-    shadowOpacity: 0.16,
+    shadowColor: "#0a84ff",
+    shadowOpacity: 0.14,
     shadowRadius: 16,
     shadowOffset: { width: 0, height: 10 },
     elevation: IS_ANDROID ? 0 : 4,
@@ -2647,11 +2788,11 @@ const lightStyles = StyleSheet.create({
     textTransform: "uppercase",
     letterSpacing: 0.9,
     fontWeight: "900",
-    color: "#64748b",
+    color: "#6b7a99",
     marginBottom: 4,
   },
-  heroTitle: { fontSize: 16, fontWeight: "900", color: "#0f172a", marginBottom: 4 },
-  heroText: { fontSize: 12, color: "#475569", lineHeight: 16 },
+  heroTitle: { fontSize: 18, fontWeight: "900", color: "#0f172a", marginBottom: 4, fontFamily: FONT_DISPLAY },
+  heroText: { fontSize: 12, color: "#5b6b88", lineHeight: 17, fontFamily: FONT_BODY },
   heroBadge: { paddingHorizontal: 9, paddingVertical: 5, marginLeft: 8 },
   heroBadgeText: { fontSize: 8, letterSpacing: 0.4 },
   heroStats: {
@@ -2661,89 +2802,89 @@ const lightStyles = StyleSheet.create({
   },
   heroStatItem: {
     flex: 1,
-    backgroundColor: "#f7faff",
+    backgroundColor: "#eef3ff",
     borderWidth: 1,
-    borderColor: "#dbe7f4",
-    borderRadius: 12,
+    borderColor: "#d3dcef",
+    borderRadius: 14,
     paddingVertical: 8,
     alignItems: "center",
   },
-  heroStatValue: { fontSize: 14, fontWeight: "900", color: "#0f172a" },
-  heroStatLabel: { fontSize: 9, fontWeight: "800", color: "#64748b", marginTop: 2, textTransform: "uppercase" },
+  heroStatValue: { fontSize: 14, fontWeight: "900", color: "#0f172a", fontFamily: FONT_DISPLAY },
+  heroStatLabel: { fontSize: 9, fontWeight: "800", color: "#6b7a99", marginTop: 2, textTransform: "uppercase", fontFamily: FONT_ACCENT },
 
   input: {
-    minHeight: 42,
+    minHeight: 48,
     borderWidth: 1,
-    borderColor: "#d6e3f1",
-    borderRadius: 14,
+    borderColor: "#d3dcef",
+    borderRadius: 20,
     paddingHorizontal: 12,
     backgroundColor: "#ffffff",
-    color: "#111827",
+    color: "#0f172a",
     fontSize: 14,
   },
   textArea: { minHeight: 100, textAlignVertical: "top", paddingTop: 10 },
   imagePickerBox: {
     minHeight: 104,
     borderWidth: 1,
-    borderColor: "#d6e3f1",
-    borderRadius: 14,
-    backgroundColor: "#f8fbff",
+    borderColor: "#d3dcef",
+    borderRadius: 20,
+    backgroundColor: "#f6f8ff",
     overflow: "hidden",
     alignItems: "center",
     justifyContent: "center",
   },
   imagePickerPreview: { width: "100%", height: 140, resizeMode: "cover" },
   imagePickerEmpty: { minHeight: 92, alignItems: "center", justifyContent: "center" },
-  imagePickerEmptyText: { marginTop: 6, fontSize: 11, color: "#475569", fontWeight: "700" },
+  imagePickerEmptyText: { marginTop: 6, fontSize: 11, color: "#5b6b88", fontWeight: "700" },
 
   chipsWrap: { paddingBottom: 8, paddingTop: 2 },
-  chip: { borderWidth: 1, borderColor: "#d6e3f1", borderRadius: 999, paddingHorizontal: 12, paddingVertical: 7, marginRight: 8, backgroundColor: "#f8fbff" },
-  chipActive: { backgroundColor: "#111827", borderColor: "#111827" },
-  chipText: { fontSize: 11, color: "#334155", fontWeight: "800" },
+  chip: { borderWidth: 1, borderColor: "#d3dcef", borderRadius: 14, paddingHorizontal: 12, paddingVertical: 9, marginRight: 8, backgroundColor: "#f6f8ff" },
+  chipActive: { backgroundColor: "#0a84ff", borderColor: "#0a84ff" },
+  chipText: { fontSize: 11, color: "#5b6b88", fontWeight: "800", fontFamily: FONT_ACCENT },
   chipTextActive: { color: "#fff" },
 
   startupCard: {
     backgroundColor: "#ffffff",
     borderWidth: 1,
-    borderColor: "#d6e3f1",
-    borderRadius: 22,
+    borderColor: "#d3dcef",
+    borderRadius: 20,
     padding: 13,
     marginBottom: 12,
     shadowColor: "#0f172a",
-    shadowOpacity: 0.11,
+    shadowOpacity: 0.14,
     shadowRadius: 12,
     shadowOffset: { width: 0, height: 8 },
     elevation: IS_ANDROID ? 0 : 4,
   },
   startupTop: { flexDirection: "row", justifyContent: "space-between", alignItems: "center", marginBottom: 12 },
-  startupTitle: { fontSize: 15, fontWeight: "900", color: "#111827", marginBottom: 6, letterSpacing: -0.2 },
+  startupTitle: { fontSize: 16, fontWeight: "900", color: "#0f172a", marginBottom: 6, letterSpacing: -0.2, fontFamily: FONT_DISPLAY },
   startupFooter: { flexDirection: "row", justifyContent: "space-between", alignItems: "center", marginTop: 6 },
-  logo: { width: 48, height: 48, borderRadius: 12, marginRight: 8, backgroundColor: "#f1f5f9" },
+  logo: { width: 48, height: 48, borderRadius: 14, marginRight: 8, backgroundColor: "#e6edff" },
 
   memberStack: { flexDirection: "row", alignItems: "center" },
   memberBubble: {
     width: 25,
     height: 25,
-    borderRadius: 13,
+    borderRadius: 14,
     borderWidth: 1.5,
     borderColor: "#fff",
-    backgroundColor: "#e2e8f0",
+    backgroundColor: "#dde7fb",
     justifyContent: "center",
     alignItems: "center",
   },
   memberOverlap: { marginLeft: -7 },
-  memberBubbleText: { fontSize: 10, fontWeight: "900", color: "#1e293b" },
-  memberMore: { backgroundColor: "#111827" },
-  memberMoreText: { fontSize: 9, fontWeight: "900", color: "#fff" },
+  memberBubbleText: { fontSize: 10, fontWeight: "900", color: "#22304f", fontFamily: FONT_ACCENT },
+  memberMore: { backgroundColor: "#0a84ff" },
+  memberMoreText: { fontSize: 9, fontWeight: "900", color: "#fff", fontFamily: FONT_ACCENT },
 
   formCard: {
     backgroundColor: "#ffffff",
-    borderRadius: 22,
+    borderRadius: 20,
     borderWidth: 1,
-    borderColor: "#d6e3f1",
+    borderColor: "#d3dcef",
     padding: 13,
     shadowColor: "#0f172a",
-    shadowOpacity: 0.1,
+    shadowOpacity: 0.14,
     shadowRadius: 12,
     shadowOffset: { width: 0, height: 7 },
     elevation: IS_ANDROID ? 0 : 3,
@@ -2752,7 +2893,7 @@ const lightStyles = StyleSheet.create({
   projectRow: {
     backgroundColor: "#ffffff",
     borderWidth: 1,
-    borderColor: "#d6e3f1",
+    borderColor: "#d3dcef",
     borderRadius: 20,
     padding: 11,
     marginBottom: 11,
@@ -2760,47 +2901,47 @@ const lightStyles = StyleSheet.create({
     alignItems: "center",
     gap: 8,
     shadowColor: "#0f172a",
-    shadowOpacity: 0.09,
+    shadowOpacity: 0.14,
     shadowRadius: 10,
     shadowOffset: { width: 0, height: 6 },
     elevation: IS_ANDROID ? 0 : 3,
   },
-  projectLogo: { width: 54, height: 54, borderRadius: 13, backgroundColor: "#f1f5f9" },
+  projectLogo: { width: 54, height: 54, borderRadius: 14, backgroundColor: "#e6edff" },
 
   detailsHeader: {
     backgroundColor: "#ffffff",
     borderWidth: 1,
-    borderColor: "#d6e3f1",
-    borderRadius: 22,
+    borderColor: "#d3dcef",
+    borderRadius: 20,
     padding: 13,
     flexDirection: "row",
     alignItems: "center",
     gap: 10,
     marginBottom: 10,
     shadowColor: "#0f172a",
-    shadowOpacity: 0.1,
+    shadowOpacity: 0.14,
     shadowRadius: 12,
     shadowOffset: { width: 0, height: 6 },
     elevation: IS_ANDROID ? 0 : 3,
   },
-  detailsLogo: { width: 74, height: 74, borderRadius: 17, backgroundColor: "#f1f5f9" },
+  detailsLogo: { width: 74, height: 74, borderRadius: 14, backgroundColor: "#e6edff" },
   detailTabsWrap: { flexDirection: "row", gap: 8, marginVertical: 8 },
   detailTab: {
     borderWidth: 1,
-    borderColor: "#d9e4f1",
+    borderColor: "#d3dcef",
     borderRadius: 1000,
     paddingHorizontal: 13,
-    paddingVertical: 7,
-    backgroundColor: "#f7faff",
+    paddingVertical: 9,
+    backgroundColor: "#eef3ff",
   },
-  detailTabActive: { backgroundColor: "#111827", borderColor: "#111827" },
-  detailTabText: { fontSize: 11, color: "#334155", fontWeight: "800", textTransform: "uppercase" },
+  detailTabActive: { backgroundColor: "#0a84ff", borderColor: "#0a84ff" },
+  detailTabText: { fontSize: 11, color: "#5b6b88", fontWeight: "800", textTransform: "uppercase", fontFamily: FONT_ACCENT },
   detailTabTextActive: { color: "#fff" },
 
   requestCard: {
     backgroundColor: "#ffffff",
     borderWidth: 1,
-    borderColor: "#d6e3f1",
+    borderColor: "#d3dcef",
     borderRadius: 20,
     padding: 11,
     marginBottom: 11,
@@ -2808,7 +2949,7 @@ const lightStyles = StyleSheet.create({
     alignItems: "center",
     gap: 10,
     shadowColor: "#0f172a",
-    shadowOpacity: 0.09,
+    shadowOpacity: 0.14,
     shadowRadius: 10,
     shadowOffset: { width: 0, height: 6 },
     elevation: IS_ANDROID ? 0 : 3,
@@ -2817,27 +2958,27 @@ const lightStyles = StyleSheet.create({
     width: 40,
     height: 40,
     borderRadius: 20,
-    backgroundColor: "#e2e8f0",
+    backgroundColor: "#dde7fb",
     alignItems: "center",
     justifyContent: "center",
   },
-  requestAvatarText: { fontSize: 14, fontWeight: "900", color: "#0f172a" },
+  requestAvatarText: { fontSize: 14, fontWeight: "900", color: "#0f172a", fontFamily: FONT_ACCENT },
   requestActions: { marginLeft: 6 },
 
   profileCard: {
     backgroundColor: "#ffffff",
     borderWidth: 1,
-    borderColor: "#d6e3f1",
-    borderRadius: 22,
+    borderColor: "#d3dcef",
+    borderRadius: 20,
     padding: 13,
     marginBottom: 12,
     shadowColor: "#0f172a",
-    shadowOpacity: 0.1,
+    shadowOpacity: 0.14,
     shadowRadius: 12,
     shadowOffset: { width: 0, height: 6 },
     elevation: IS_ANDROID ? 0 : 3,
   },
-  avatar: { width: 66, height: 66, borderRadius: 33, marginRight: 10, backgroundColor: "#e2e8f0" },
+  avatar: { width: 66, height: 66, borderRadius: 33, marginRight: 10, backgroundColor: "#dde7fb" },
   skillWrap: { flexDirection: "row", flexWrap: "wrap", gap: 6, marginTop: 6 },
 
   statsGrid: { flexDirection: "row", flexWrap: "wrap", gap: 8, marginBottom: 10 },
@@ -2846,46 +2987,46 @@ const lightStyles = StyleSheet.create({
     flexGrow: 1,
     backgroundColor: "#ffffff",
     borderWidth: 1,
-    borderColor: "#d6e3f1",
-    borderRadius: 18,
+    borderColor: "#d3dcef",
+    borderRadius: 20,
     paddingVertical: 10,
     paddingHorizontal: 10,
     alignItems: "center",
     shadowColor: "#0f172a",
-    shadowOpacity: 0.08,
+    shadowOpacity: 0.14,
     shadowRadius: 9,
     shadowOffset: { width: 0, height: 5 },
     elevation: IS_ANDROID ? 0 : 2,
   },
   statValue: { fontSize: 18, fontWeight: "900", color: "#0f172a", backgroundColor: "transparent" },
-  statLabel: { fontSize: 9, color: "#64748b", fontWeight: "800", textTransform: "uppercase", marginTop: 1, backgroundColor: "transparent" },
-  progressTrack: { height: 8, borderRadius: 6, backgroundColor: "#dbeafe", overflow: "hidden", marginBottom: 4 },
-  progressFill: { height: "100%", borderRadius: 6, backgroundColor: "#2563eb" },
-  progressTrackLg: { height: 12, borderRadius: 8, backgroundColor: "#dbeafe", overflow: "hidden", marginVertical: 10 },
-  progressFillLg: { height: "100%", borderRadius: 8, backgroundColor: "#2563eb" },
+  statLabel: { fontSize: 9, color: "#6b7a99", fontWeight: "800", textTransform: "uppercase", marginTop: 1, backgroundColor: "transparent" },
+  progressTrack: { height: 8, borderRadius: 14, backgroundColor: "#dbe9ff", overflow: "hidden", marginBottom: 4 },
+  progressFill: { height: "100%", borderRadius: 14, backgroundColor: "#0a84ff" },
+  progressTrackLg: { height: 12, borderRadius: 20, backgroundColor: "#dbe9ff", overflow: "hidden", marginVertical: 10 },
+  progressFillLg: { height: "100%", borderRadius: 20, backgroundColor: "#0a84ff" },
   receiptImage: {
     width: "100%",
     height: 180,
-    borderRadius: 14,
+    borderRadius: 20,
     borderWidth: 1,
-    borderColor: "#dbe2ef",
+    borderColor: "#d3dcef",
     marginVertical: 8,
     resizeMode: "cover",
-    backgroundColor: "#e2e8f0",
+    backgroundColor: "#dde7fb",
   },
   teamChatList: { maxHeight: 280, marginTop: 8, marginBottom: 10 },
-  teamChatBubble: { maxWidth: "85%", borderRadius: 14, paddingHorizontal: 10, paddingVertical: 8, marginBottom: 8 },
-  teamChatMine: { alignSelf: "flex-end", backgroundColor: "#2563eb" },
-  teamChatOther: { alignSelf: "flex-start", backgroundColor: "#f8fafc", borderWidth: 1, borderColor: "#e2e8f0" },
-  teamChatName: { fontSize: 10, fontWeight: "800", color: "#1e293b", marginBottom: 3 },
-  teamChatTime: { fontSize: 9, color: "#94a3b8", marginTop: 3 },
+  teamChatBubble: { maxWidth: "85%", borderRadius: 20, paddingHorizontal: 10, paddingVertical: 8, marginBottom: 8 },
+  teamChatMine: { alignSelf: "flex-end", backgroundColor: "#0a84ff" },
+  teamChatOther: { alignSelf: "flex-start", backgroundColor: "#fbfdff", borderWidth: 1, borderColor: "#dde7fb" },
+  teamChatName: { fontSize: 10, fontWeight: "800", color: "#22304f", marginBottom: 3 },
+  teamChatTime: { fontSize: 9, color: "#9cabcb", marginTop: 3 },
   teamChatInputRow: {
     flexDirection: "row",
     alignItems: "center",
     borderWidth: 1,
-    borderColor: "#dbe2ef",
-    borderRadius: 14,
-    backgroundColor: "#f8fafc",
+    borderColor: "#d3dcef",
+    borderRadius: 20,
+    backgroundColor: "#fbfdff",
     paddingHorizontal: 10,
     paddingVertical: 6,
   },
@@ -2893,129 +3034,129 @@ const lightStyles = StyleSheet.create({
   teamChatSendBtn: {
     width: 34,
     height: 34,
-    borderRadius: 10,
+    borderRadius: 14,
     alignItems: "center",
     justifyContent: "center",
-    backgroundColor: "#1d4ed8",
+    backgroundColor: "#0a84ff",
   },
 
   notifCard: {
     backgroundColor: "#ffffff",
     borderWidth: 1,
-    borderColor: "#d6e3f1",
-    borderRadius: 18,
+    borderColor: "#d3dcef",
+    borderRadius: 20,
     padding: 10,
     marginBottom: 8,
   },
-  notifUnread: { borderColor: "#111827", shadowColor: "#111827", shadowOpacity: 0.06, shadowRadius: 6, shadowOffset: { width: 0, height: 2 } },
+  notifUnread: { borderColor: "#0a84ff", shadowColor: "#0a84ff", shadowOpacity: 0.14, shadowRadius: 8, shadowOffset: { width: 0, height: 2 } },
 
   teamRow: {
     backgroundColor: "#ffffff",
     borderWidth: 1,
-    borderColor: "#d6e3f1",
-    borderRadius: 18,
+    borderColor: "#d3dcef",
+    borderRadius: 20,
     padding: 10,
     marginBottom: 8,
     flexDirection: "row",
     alignItems: "center",
     gap: 10,
   },
-  teamAvatar: { width: 36, height: 36, borderRadius: 18, backgroundColor: "#e2e8f0", alignItems: "center", justifyContent: "center" },
-  teamAvatarText: { fontSize: 13, fontWeight: "900", color: "#1e293b" },
+  teamAvatar: { width: 36, height: 36, borderRadius: 20, backgroundColor: "#dde7fb", alignItems: "center", justifyContent: "center" },
+  teamAvatarText: { fontSize: 13, fontWeight: "900", color: "#22304f", fontFamily: FONT_ACCENT },
 
   adminTabsWrap: { flexDirection: "row", flexWrap: "wrap", gap: 6, marginBottom: 10 },
   adminTab: {
     borderWidth: 1,
-    borderColor: "#d9e4f1",
+    borderColor: "#d3dcef",
     borderRadius: 999,
     paddingHorizontal: 10,
     paddingVertical: 6,
-    backgroundColor: "#f7faff",
+    backgroundColor: "#eef3ff",
   },
-  adminTabActive: { backgroundColor: "#111827", borderColor: "#111827" },
-  adminTabText: { fontSize: 11, color: "#334155", fontWeight: "800" },
+  adminTabActive: { backgroundColor: "#0a84ff", borderColor: "#0a84ff" },
+  adminTabText: { fontSize: 11, color: "#5b6b88", fontWeight: "800", fontFamily: FONT_ACCENT },
   adminTabTextActive: { color: "#fff" },
 
   card: {
     backgroundColor: "#ffffff",
     borderWidth: 1,
-    borderColor: "#d6e3f1",
-    borderRadius: 18,
+    borderColor: "#d3dcef",
+    borderRadius: 22,
     padding: 11,
     marginBottom: 11,
     shadowColor: "#0f172a",
-    shadowOpacity: 0.08,
+    shadowOpacity: 0.18,
     shadowRadius: 8,
     shadowOffset: { width: 0, height: 5 },
     elevation: IS_ANDROID ? 0 : 2,
   },
-  cardTitle: { fontSize: 13, fontWeight: "800", color: "#111827", backgroundColor: "transparent" },
-  cardDesc: { fontSize: 12, color: "#334155", marginTop: 6, marginBottom: 6, backgroundColor: "transparent" },
-  task: { borderWidth: 1, borderColor: "#d6e3f1", borderRadius: 14, padding: 9, marginTop: 8, backgroundColor: "#f8fbff" },
+  cardTitle: { fontSize: 13, fontWeight: "800", color: "#0f172a", backgroundColor: "transparent", fontFamily: FONT_ACCENT },
+  cardDesc: { fontSize: 12, color: "#5b6b88", marginTop: 6, marginBottom: 6, backgroundColor: "transparent", fontFamily: FONT_BODY },
+  task: { borderWidth: 1, borderColor: "#d3dcef", borderRadius: 16, padding: 9, marginTop: 8, backgroundColor: "#f6f8ff" },
   rowBetween: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", marginBottom: 6 },
   rowNoWrap: { flexDirection: "row", alignItems: "center", flexWrap: "wrap", marginBottom: 6, gap: 6 },
   row: { flexDirection: "row", alignItems: "center", flexWrap: "wrap", marginBottom: 6 },
 
-  badge: { borderWidth: 1, borderRadius: 999, paddingHorizontal: 8, paddingVertical: 4, alignSelf: "flex-start" },
-  badge_default: { backgroundColor: "#eff5fd", borderColor: "#dce7f4" },
-  badge_active: { backgroundColor: "#111827", borderColor: "#111827" },
+  badge: { borderWidth: 1, borderRadius: 14, paddingHorizontal: 8, paddingVertical: 4, alignSelf: "flex-start" },
+  badge_default: { backgroundColor: "#f1f5ff", borderColor: "#d3dcef" },
+  badge_active: { backgroundColor: "#0a84ff", borderColor: "#0a84ff" },
   badge_success: { backgroundColor: "#ecfdf3", borderColor: "#a7f3d0" },
   badge_danger: { backgroundColor: "#fff1f2", borderColor: "#fecdd3" },
-  badgeText: { fontSize: 9, fontWeight: "900", textTransform: "uppercase", letterSpacing: 0.2 },
-  badgeText_default: { color: "#475569" },
+  badgeText: { fontSize: 9, fontWeight: "900", textTransform: "uppercase", letterSpacing: 0.2, fontFamily: FONT_ACCENT },
+  badgeText_default: { color: "#5b6b88" },
   badgeText_active: { color: "#fff" },
   badgeText_success: { color: "#047857" },
   badgeText_danger: { color: "#be123c" },
 
-  btn: { minHeight: 38, paddingHorizontal: 14, borderRadius: 14, justifyContent: "center", alignItems: "center", borderWidth: 1, marginRight: 6, marginTop: 6 },
-  btnSmall: { minHeight: 32, paddingHorizontal: 11, borderRadius: 12 },
+  btn: { minHeight: 46, paddingHorizontal: 16, borderRadius: 14, justifyContent: "center", alignItems: "center", borderWidth: 1, marginRight: 7, marginTop: 7 },
+  btnSmall: { minHeight: 34, paddingHorizontal: 12, borderRadius: 13 },
   btnInner: { flexDirection: "row", alignItems: "center", justifyContent: "center" },
   btnIcon: { marginRight: 5 },
   btn_primary: {
-    backgroundColor: "#111827",
-    borderColor: "#111827",
+    backgroundColor: "#0a84ff",
+    borderColor: "#0a84ff",
     shadowColor: "#0f172a",
-    shadowOpacity: 0.18,
+    shadowOpacity: 0.22,
     shadowRadius: 6,
     shadowOffset: { width: 0, height: 3 },
     elevation: IS_ANDROID ? 0 : 2,
   },
-  btn_secondary: { backgroundColor: "#f7faff", borderColor: "#dce7f3" },
+  btn_secondary: { backgroundColor: "#eef3ff", borderColor: "#d3dcef" },
   btn_danger: { backgroundColor: "#fff1f2", borderColor: "#fda4af" },
-  btn_ghost: { backgroundColor: "#edf3fa", borderColor: "#dce7f3" },
-  btnText: { fontSize: 11, fontWeight: "800" },
+  btn_ghost: { backgroundColor: "#eef3ff", borderColor: "#d3dcef" },
+  btnText: { fontSize: 11, fontWeight: "800", fontFamily: FONT_ACCENT },
   btnTextPrimary: { color: "#fff" },
-  btnTextSecondary: { color: "#111827" },
+  btnTextSecondary: { color: "#0f172a" },
 
   emptyWrap: { alignItems: "center", justifyContent: "center", paddingVertical: 26, paddingHorizontal: 18 },
   emptyIcon: {
     width: 58,
     height: 58,
-    borderRadius: 29,
-    backgroundColor: "#edf3fa",
+    borderRadius: 20,
+    backgroundColor: "#eef3ff",
     alignItems: "center",
     justifyContent: "center",
     marginBottom: 10,
   },
-  emptyIconText: { fontSize: 24, fontWeight: "900", color: "#111827" },
-  emptyTitle: { fontSize: 14, fontWeight: "900", color: "#0f172a", textAlign: "center", marginBottom: 4 },
-  emptySubtitle: { fontSize: 11, color: "#64748b", textAlign: "center", marginBottom: 8, lineHeight: 16 },
+  emptyIconText: { fontSize: 24, fontWeight: "900", color: "#0f172a" },
+  emptyTitle: { fontSize: 14, fontWeight: "900", color: "#0f172a", textAlign: "center", marginBottom: 4, fontFamily: FONT_DISPLAY },
+  emptySubtitle: { fontSize: 11, color: "#6b7a99", textAlign: "center", marginBottom: 8, lineHeight: 16, fontFamily: FONT_BODY },
 
-  splashRoot: { flex: 1, backgroundColor: "#eaf1ff" },
+  splashRoot: { flex: 1, backgroundColor: "#eef3ff" },
   splashCenter: { flex: 1, alignItems: "center", justifyContent: "center", paddingHorizontal: 24 },
   splashSpinnerOnly: { flex: 1, alignItems: "center", justifyContent: "center" },
   splashGlass: {
     width: "100%",
     maxWidth: 360,
-    borderRadius: 30,
+    borderRadius: 20,
     borderWidth: 1,
-    borderColor: "#d9e4f3",
+    borderColor: "#d3dcef",
     backgroundColor: "#ffffff",
     paddingVertical: 24,
     paddingHorizontal: 18,
     alignItems: "center",
     shadowColor: "#0f172a",
-    shadowOpacity: 0.16,
+    shadowOpacity: 0.14,
     shadowRadius: 22,
     shadowOffset: { width: 0, height: 10 },
     elevation: IS_ANDROID ? 0 : 10,
@@ -3024,24 +3165,24 @@ const lightStyles = StyleSheet.create({
     width: 90,
     height: 90,
     borderRadius: 45,
-    backgroundColor: "#111827",
+    backgroundColor: "#0a84ff",
     alignItems: "center",
     justifyContent: "center",
     marginBottom: 18,
     shadowColor: "#0f172a",
-    shadowOpacity: 0.24,
+    shadowOpacity: 0.14,
     shadowRadius: 16,
     shadowOffset: { width: 0, height: 8 },
     elevation: IS_ANDROID ? 0 : 8,
   },
   splashOrbText: { color: "#fff", fontSize: 42, fontWeight: "900", letterSpacing: -0.8 },
-  splashTitle: { color: "#0f172a", fontSize: 28, fontWeight: "900", letterSpacing: -0.5, marginBottom: 4 },
-  splashSubtitle: { color: "#64748b", fontSize: 13, fontWeight: "600", marginBottom: 18 },
+  splashTitle: { color: "#0f172a", fontSize: 28, fontWeight: "900", letterSpacing: -0.5, marginBottom: 4, fontFamily: FONT_DISPLAY },
+  splashSubtitle: { color: "#6b7a99", fontSize: 13, fontWeight: "600", marginBottom: 18, fontFamily: FONT_BODY },
   splashLoaderRow: { flexDirection: "row", alignItems: "center", gap: 8, marginBottom: 12 },
-  splashLoaderText: { fontSize: 12, color: "#334155", fontWeight: "700" },
+  splashLoaderText: { fontSize: 12, color: "#5b6b88", fontWeight: "700", fontFamily: FONT_ACCENT },
   splashDots: { flexDirection: "row", alignItems: "center", gap: 8 },
-  splashDot: { width: 8, height: 8, borderRadius: 4, backgroundColor: "#cbd5e1" },
-  splashDotActive: { width: 20, borderRadius: 6, backgroundColor: "#2563eb" },
+  splashDot: { width: 8, height: 8, borderRadius: 4, backgroundColor: "#c8d5f1" },
+  splashDotActive: { width: 20, borderRadius: 14, backgroundColor: "#0a84ff" },
 
   onboardingOverlay: {
     flex: 1,
@@ -3055,12 +3196,12 @@ const lightStyles = StyleSheet.create({
     width: "100%",
     maxWidth: 430,
     backgroundColor: "#ffffff",
-    borderRadius: 28,
+    borderRadius: 20,
     padding: 18,
     borderWidth: 1,
-    borderColor: "#d9e4f3",
+    borderColor: "#d3dcef",
     shadowColor: "#0f172a",
-    shadowOpacity: 0.15,
+    shadowOpacity: 0.14,
     shadowRadius: 20,
     shadowOffset: { width: 0, height: 10 },
     elevation: IS_ANDROID ? 0 : 14,
@@ -3076,50 +3217,50 @@ const lightStyles = StyleSheet.create({
     width: 62,
     height: 62,
     borderRadius: 20,
-    backgroundColor: "#f5f9ff",
+    backgroundColor: "#f1f5ff",
     borderWidth: 1,
-    borderColor: "#dce7f4",
+    borderColor: "#d3dcef",
     alignItems: "center",
     justifyContent: "center",
   },
   onboardingSkipBtn: { paddingVertical: 8, paddingHorizontal: 10 },
-  onboardingSkipText: { fontSize: 11, fontWeight: "700", color: "#64748b", textTransform: "uppercase" },
-  onboardingTitle: { fontSize: 22, fontWeight: "900", color: "#0f172a", letterSpacing: -0.4, marginBottom: 8 },
-  onboardingText: { fontSize: 13, lineHeight: 19, color: "#475569", marginBottom: 14 },
+  onboardingSkipText: { fontSize: 11, fontWeight: "700", color: "#6b7a99", textTransform: "uppercase" },
+  onboardingTitle: { fontSize: 22, fontWeight: "900", color: "#0f172a", letterSpacing: -0.4, marginBottom: 8, fontFamily: FONT_DISPLAY },
+  onboardingText: { fontSize: 13, lineHeight: 19, color: "#5b6b88", marginBottom: 14, fontFamily: FONT_BODY },
   onboardingDots: { flexDirection: "row", alignItems: "center", marginBottom: 14, gap: 6 },
-  onboardingDot: { width: 8, height: 8, borderRadius: 4, backgroundColor: "#d1d9e6" },
-  onboardingDotActive: { width: 20, borderRadius: 6, backgroundColor: "#2563eb" },
+  onboardingDot: { width: 8, height: 8, borderRadius: 4, backgroundColor: "#c8d5f1" },
+  onboardingDotActive: { width: 20, borderRadius: 14, backgroundColor: "#0a84ff" },
   onboardingActionsRow: { flexDirection: "row", alignItems: "center", gap: 8 },
   onboardingBackBtn: { minWidth: 94 },
   onboardingSpacer: { width: 94 },
   onboardingActionBtn: { marginTop: 2, flex: 1 },
-  onboardingHint: { marginTop: 10, fontSize: 10, color: "#64748b", textAlign: "center", fontWeight: "600" },
+  onboardingHint: { marginTop: 10, fontSize: 10, color: "#6b7a99", textAlign: "center", fontWeight: "600", fontFamily: FONT_BODY },
 
   bottomTabWrap: {
     position: "absolute",
     left: 14,
     right: 14,
     bottom: 16,
-    minHeight: 74,
-    borderRadius: 28,
-    paddingHorizontal: 10,
-    paddingVertical: 8,
-    backgroundColor: "#ffffff",
+    minHeight: 76,
+    borderRadius: 30,
+    paddingHorizontal: 8,
+    paddingVertical: 10,
+    backgroundColor: "rgba(255,255,255,0.88)",
     borderWidth: 1,
-    borderColor: "#d6e1ef",
+    borderColor: "#d9e4fa",
     flexDirection: "row",
     justifyContent: "space-between",
     alignItems: "center",
     shadowColor: "#0f172a",
-    shadowOpacity: 0.16,
+    shadowOpacity: 0.24,
     shadowRadius: 20,
     shadowOffset: { width: 0, height: 10 },
     elevation: IS_ANDROID ? 0 : 16,
     zIndex: 18,
   },
   bottomTabWrapCompact: {
-    minHeight: 68,
-    borderRadius: 22,
+    minHeight: 64,
+    borderRadius: 24,
     paddingHorizontal: 7,
     paddingVertical: 6,
   },
@@ -3130,7 +3271,7 @@ const lightStyles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
     borderRadius: 16,
-    paddingVertical: 6,
+    paddingVertical: 8,
     marginHorizontal: 2,
   },
   bottomTabItemCompact: {
@@ -3138,27 +3279,27 @@ const lightStyles = StyleSheet.create({
     marginHorizontal: 1,
     paddingVertical: 4,
   },
-  bottomTabItemActive: { backgroundColor: "#f2f6ff" },
+  bottomTabItemActive: { backgroundColor: "#edf3ff" },
   bottomTabItemCreate: {
-    backgroundColor: "#f3f7ff",
+    backgroundColor: "#edf4ff",
     borderWidth: 1,
-    borderColor: "#d6e1ef",
+    borderColor: "#d9e4fa",
   },
   bottomTabIconWrap: { position: "relative", alignItems: "center", justifyContent: "center" },
-  bottomTabLabel: { marginTop: 3, fontSize: 10, fontWeight: "700", color: "#64748b" },
+  bottomTabLabel: { marginTop: 3, fontSize: 10, fontWeight: "700", color: "#6b7a99", fontFamily: FONT_ACCENT },
   bottomTabLabelCompact: { fontSize: 9, marginTop: 2 },
-  bottomTabLabelActive: { color: "#2563eb", fontWeight: "800" },
+  bottomTabLabelActive: { color: "#0a84ff", fontWeight: "800" },
   bottomTabBadge: {
     position: "absolute",
     top: -7,
     right: -11,
     minWidth: 15,
     height: 15,
-    borderRadius: 8,
-    backgroundColor: "#111827",
+    borderRadius: 20,
+    backgroundColor: "#0f172a",
     paddingHorizontal: 3,
     borderWidth: 1,
-    borderColor: "#d6e1ef",
+    borderColor: "#d3dcef",
     alignItems: "center",
     justifyContent: "center",
   },
@@ -3168,16 +3309,16 @@ const lightStyles = StyleSheet.create({
     position: "absolute",
     right: 16,
     bottom: 98,
-    width: 56,
-    height: 56,
-    borderRadius: 28,
-    backgroundColor: "#0f172a",
-    borderWidth: 3,
-    borderColor: "#d6e1ef",
+    width: 60,
+    height: 60,
+    borderRadius: 24,
+    backgroundColor: "#0a84ff",
+    borderWidth: 1,
+    borderColor: "#d9e4fa",
     alignItems: "center",
     justifyContent: "center",
-    shadowColor: "#0f172a",
-    shadowOpacity: 0.2,
+    shadowColor: "#0a84ff",
+    shadowOpacity: 0.26,
     shadowRadius: 8,
     shadowOffset: { width: 0, height: 4 },
     elevation: IS_ANDROID ? 0 : 10,
@@ -3186,194 +3327,202 @@ const lightStyles = StyleSheet.create({
   aiFabCompact: {
     width: 52,
     height: 52,
-    borderRadius: 26,
+    borderRadius: 20,
   },
-  aiFabActive: { backgroundColor: "#e11d48" },
+  aiFabActive: { backgroundColor: "#0a84ff" },
   aiFabText: { color: "#fff", fontSize: 11, fontWeight: "900", letterSpacing: 0.4 },
 
   authOverlay: { flex: 1, backgroundColor: "rgba(15,23,42,0.28)", justifyContent: "center", padding: 14 },
-  authCard: { backgroundColor: "#ffffff", borderRadius: 24, padding: 16, maxHeight: "92%", borderWidth: 1, borderColor: "#d6e3f1" },
+  authCard: { backgroundColor: "rgba(255,255,255,0.95)", borderRadius: 28, padding: 16, maxHeight: "92%", borderWidth: 1, borderColor: "#d9e4fa" },
   modalOverlay: { flex: 1, backgroundColor: "rgba(15,23,42,0.24)", justifyContent: "flex-end" },
-  modalCard: { backgroundColor: "#ffffff", borderTopLeftRadius: 24, borderTopRightRadius: 24, padding: 14, maxHeight: "92%", borderTopWidth: 1, borderColor: "#d6e3f1" },
+  modalCard: { backgroundColor: "rgba(255,255,255,0.96)", borderTopLeftRadius: 30, borderTopRightRadius: 30, padding: 14, maxHeight: "92%", borderTopWidth: 1, borderColor: "#d9e4fa" },
   aiOverlay: { flex: 1, backgroundColor: "rgba(15,23,42,0.3)", justifyContent: "flex-end", alignItems: "flex-end", padding: 12 },
-  aiCard: { width: "100%", maxWidth: 430, backgroundColor: "#ffffff", borderRadius: 24, padding: 12, maxHeight: "80%", borderWidth: 1, borderColor: "#dbe2ef" },
+  aiCard: { width: "100%", maxWidth: 430, backgroundColor: "rgba(255,255,255,0.97)", borderRadius: 26, padding: 12, maxHeight: "80%", borderWidth: 1, borderColor: "#d9e4fa" },
   aiHeader: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", marginBottom: 10 },
   aiHeaderLeft: { flexDirection: "row", alignItems: "center", flex: 1 },
-  aiHeaderIcon: { width: 34, height: 34, borderRadius: 10, backgroundColor: "#edf2ff", borderWidth: 1, borderColor: "#dbeafe", alignItems: "center", justifyContent: "center", marginRight: 8 },
-  aiTitle: { fontSize: 14, fontWeight: "900", color: "#0f172a" },
-  aiSubtitle: { fontSize: 10, color: "#64748b", marginTop: 1 },
-  aiCloseBtn: { width: 30, height: 30, borderRadius: 9, borderWidth: 1, borderColor: "#dbe2ef", backgroundColor: "#f8fafc", alignItems: "center", justifyContent: "center" },
-  aiMessages: { maxHeight: 280, borderWidth: 1, borderColor: "#e2e8f0", borderRadius: 14, backgroundColor: "#f8fbff" },
+  aiHeaderIcon: { width: 34, height: 34, borderRadius: 14, backgroundColor: "#f1f5ff", borderWidth: 1, borderColor: "#dbe9ff", alignItems: "center", justifyContent: "center", marginRight: 8 },
+  aiTitle: { fontSize: 14, fontWeight: "900", color: "#0f172a", fontFamily: FONT_DISPLAY },
+  aiSubtitle: { fontSize: 10, color: "#6b7a99", marginTop: 1, fontFamily: FONT_BODY },
+  aiCloseBtn: { width: 30, height: 30, borderRadius: 9, borderWidth: 1, borderColor: "#d3dcef", backgroundColor: "#fbfdff", alignItems: "center", justifyContent: "center" },
+  aiMessages: { maxHeight: 280, borderWidth: 1, borderColor: "#dde7fb", borderRadius: 20, backgroundColor: "#f6f8ff" },
   aiMessagesContent: { padding: 10 },
-  chat: { padding: 10, borderRadius: 14, marginBottom: 8, maxWidth: "88%" },
-  chatUser: { alignSelf: "flex-end", backgroundColor: "#2563eb" },
-  chatAi: { alignSelf: "flex-start", backgroundColor: "#ffffff", borderWidth: 1, borderColor: "#e2e8f0" },
+  chat: { padding: 10, borderRadius: 20, marginBottom: 8, maxWidth: "88%" },
+  chatUser: { alignSelf: "flex-end", backgroundColor: "#0a84ff" },
+  chatAi: { alignSelf: "flex-start", backgroundColor: "#ffffff", borderWidth: 1, borderColor: "#dde7fb" },
   aiTypingWrap: { alignItems: "center", justifyContent: "center", minWidth: 64 },
-  aiInputRow: { flexDirection: "row", alignItems: "center", marginTop: 10, backgroundColor: "#f8fafc", borderRadius: 14, borderWidth: 1, borderColor: "#e2e8f0", paddingLeft: 12, paddingRight: 6, paddingVertical: 6 },
+  aiInputRow: { flexDirection: "row", alignItems: "center", marginTop: 10, backgroundColor: "#fbfdff", borderRadius: 20, borderWidth: 1, borderColor: "#dde7fb", paddingLeft: 12, paddingRight: 6, paddingVertical: 6 },
   aiInput: { flex: 1, minHeight: 36, color: "#0f172a", fontSize: 14, paddingVertical: 6, paddingRight: 8 },
-  aiSendBtn: { width: 36, height: 36, borderRadius: 11, backgroundColor: "#1d4ed8", alignItems: "center", justifyContent: "center" },
-  aiSendBtnDisabled: { backgroundColor: "#94a3b8" },
-  chatText: { fontSize: 13, color: "#111827" },
+  aiSendBtn: { width: 36, height: 36, borderRadius: 14, backgroundColor: "#0a84ff", alignItems: "center", justifyContent: "center" },
+  aiSendBtnDisabled: { backgroundColor: "#9cabcb" },
+  chatText: { fontSize: 13, color: "#0f172a", fontFamily: FONT_BODY },
 });
 
 const darkStyles = StyleSheet.create({
-  container: { backgroundColor: "#070e1d" },
-  center: { backgroundColor: "#070e1d" },
-  bgOrbLarge: { backgroundColor: "rgba(14,165,233,0.16)" },
-  bgOrbMedium: { backgroundColor: "rgba(99,102,241,0.18)" },
+  container: { backgroundColor: "#0b1020" },
+  center: { backgroundColor: "#0b1020" },
+  bgOrbLarge: { backgroundColor: "rgba(10,132,255,0.24)" },
+  bgOrbMedium: { backgroundColor: "rgba(90,200,250,0.17)" },
   topSafeArea: {
     backgroundColor: "transparent",
     borderBottomColor: "transparent",
-    shadowOpacity: 0,
+    shadowOpacity: 0.14,
     elevation: 0,
   },
   headerRow: {
-    backgroundColor: "#0b1325",
-    borderColor: "#273753",
+    backgroundColor: "rgba(19,29,50,0.92)",
+    borderColor: "#3b4c72",
   },
+  headerStatCard: {
+    backgroundColor: "rgba(25,36,62,0.9)",
+    borderColor: "#2f3e63",
+    shadowOpacity: 0.22,
+  },
+  headerStatValue: { color: "#30d158" },
+  headerStatLabel: { color: "#9eb0cf" },
   headerIconBtn: {
-    backgroundColor: "#14223c",
-    borderColor: "#2f425f",
+    backgroundColor: "rgba(34,48,79,0.95)",
+    borderColor: "#3b4c72",
   },
-  headerBadge: { borderColor: "#243551" },
-  createHeaderBtn: { backgroundColor: "#2563eb" },
-  title: { color: "#f8fafc" },
-  topSubtitle: { color: "#9fb0c9" },
+  headerBadge: { borderColor: "#3b4c72" },
+  createHeaderBtn: { backgroundColor: "#0a84ff" },
+  title: { color: "#fbfdff" },
+  topSubtitle: { color: "#9eb0cf" },
+  brandMark: { backgroundColor: "#14203a", borderColor: "#3b4c72" },
 
   drawerBackdrop: { backgroundColor: "rgba(2,6,23,0.52)" },
   drawerCard: {
-    backgroundColor: "#0a1428",
-    borderRightColor: "#24344f",
+    backgroundColor: "#121a2f",
+    borderRightColor: "#3b4c72",
   },
   drawerHeader: { borderBottomColor: "rgba(148,163,184,0.2)" },
-  drawerTitle: { color: "#f8fafc" },
-  drawerSubtitle: { color: "#94a3b8" },
-  drawerItem: { backgroundColor: "#12203a", borderColor: "#30415f" },
-  drawerItemActive: { backgroundColor: "#2563eb", borderColor: "#2563eb" },
-  drawerItemText: { color: "#dbe7ff" },
-  drawerItemBadge: { backgroundColor: "rgba(15,23,42,0.85)" },
+  drawerTitle: { color: "#fbfdff" },
+  drawerSubtitle: { color: "#9cabcb" },
+  drawerItem: { backgroundColor: "#121a2f", borderColor: "#3b4c72" },
+  drawerItemActive: { backgroundColor: "#0a84ff", borderColor: "#0a84ff" },
+  drawerItemText: { color: "#e7eeff" },
+  drawerItemBadge: { backgroundColor: "rgba(15,118,110,0.35)" },
   drawerFooter: { borderTopColor: "rgba(148,163,184,0.2)" },
-  drawerUserName: { color: "#f8fafc" },
-  drawerUserEmail: { color: "#9fb0c9" },
+  drawerUserName: { color: "#fbfdff" },
+  drawerUserEmail: { color: "#9eb0cf" },
 
-  h1: { color: "#f8fafc" },
-  mutedLg: { color: "#9fb0c9" },
-  muted: { color: "#9fb0c9" },
-  tinyMuted: { color: "#7f92b0" },
-  label: { color: "#9fb0c9" },
-  splashRoot: { backgroundColor: "#070e1d" },
-  splashGlass: { backgroundColor: "#0d1a30", borderColor: "#2a3a57" },
-  splashOrb: { backgroundColor: "#2563eb" },
-  splashTitle: { color: "#f8fafc" },
-  splashSubtitle: { color: "#9fb0c9" },
-  splashLoaderText: { color: "#cbd5e1" },
-  splashDot: { backgroundColor: "#334155" },
-  splashDotActive: { backgroundColor: "#60a5fa" },
+  h1: { color: "#fbfdff" },
+  mutedLg: { color: "#9eb0cf" },
+  muted: { color: "#9eb0cf" },
+  tinyMuted: { color: "#7f93b6" },
+  label: { color: "#9eb0cf" },
+  splashRoot: { backgroundColor: "#0b1020" },
+  splashGlass: { backgroundColor: "#19213a", borderColor: "#2f3e63" },
+  splashOrb: { backgroundColor: "#0a84ff" },
+  splashTitle: { color: "#fbfdff" },
+  splashSubtitle: { color: "#9eb0cf" },
+  splashLoaderText: { color: "#c8d5f1" },
+  splashDot: { backgroundColor: "#5b6b88" },
+  splashDotActive: { backgroundColor: "#30d158" },
 
-  heroCard: { backgroundColor: "#0d1a30", borderColor: "#2a3a57" },
-  heroEyebrow: { color: "#9fb0c9" },
-  heroTitle: { color: "#f8fafc" },
-  heroText: { color: "#b8c6dd" },
-  heroStatItem: { backgroundColor: "#091327", borderColor: "#2d3f5e" },
-  heroStatValue: { color: "#f8fafc" },
-  heroStatLabel: { color: "#9fb0c9" },
+  heroCard: { backgroundColor: "#19213a", borderColor: "#2f3e63" },
+  heroEyebrow: { color: "#9eb0cf" },
+  heroTitle: { color: "#fbfdff" },
+  heroText: { color: "#c8d5f1" },
+  heroStatItem: { backgroundColor: "#10182d", borderColor: "#3b4c72" },
+  heroStatValue: { color: "#fbfdff" },
+  heroStatLabel: { color: "#9eb0cf" },
 
   input: {
-    backgroundColor: "#091327",
-    borderColor: "#2d3f5e",
-    color: "#e5edff",
+    backgroundColor: "#10182d",
+    borderColor: "#3b4c72",
+    color: "#f5f8ff",
   },
-  imagePickerBox: { backgroundColor: "#091327", borderColor: "#2d3f5e" },
-  imagePickerEmptyText: { color: "#b8c6dd" },
+  imagePickerBox: { backgroundColor: "#10182d", borderColor: "#3b4c72" },
+  imagePickerEmptyText: { color: "#c8d5f1" },
 
-  chip: { backgroundColor: "#0d1a30", borderColor: "#2a3a57" },
-  chipActive: { backgroundColor: "#2563eb", borderColor: "#2563eb" },
-  chipText: { color: "#cbd9f2" },
+  chip: { backgroundColor: "#19213a", borderColor: "#2f3e63" },
+  chipActive: { backgroundColor: "#0a84ff", borderColor: "#0a84ff" },
+  chipText: { color: "#e7eeff" },
 
-  startupCard: { backgroundColor: "#0d1a30", borderColor: "#2a3a57", shadowOpacity: 0 },
-  formCard: { backgroundColor: "#0d1a30", borderColor: "#2a3a57", shadowOpacity: 0 },
-  projectRow: { backgroundColor: "#0d1a30", borderColor: "#2a3a57", shadowOpacity: 0 },
-  detailsHeader: { backgroundColor: "#0d1a30", borderColor: "#2a3a57", shadowOpacity: 0 },
-  requestCard: { backgroundColor: "#0d1a30", borderColor: "#2a3a57", shadowOpacity: 0 },
-  profileCard: { backgroundColor: "#0d1a30", borderColor: "#2a3a57", shadowOpacity: 0 },
-  statItem: { backgroundColor: "#0d1a30", borderColor: "#2a3a57", shadowOpacity: 0 },
-  progressTrack: { backgroundColor: "#1e3a5f" },
-  progressTrackLg: { backgroundColor: "#1e3a5f" },
-  receiptImage: { borderColor: "#2d3f5e", backgroundColor: "#0f172a" },
-  notifCard: { backgroundColor: "#0d1a30", borderColor: "#2a3a57" },
-  teamRow: { backgroundColor: "#0d1a30", borderColor: "#2a3a57" },
-  teamChatOther: { backgroundColor: "#091327", borderColor: "#2d3f5e" },
-  teamChatName: { color: "#cbd5e1" },
-  teamChatTime: { color: "#7f92b0" },
-  teamChatInputRow: { backgroundColor: "#091327", borderColor: "#2d3f5e" },
-  teamChatInput: { color: "#e2e8f0" },
-  card: { backgroundColor: "#0d1a30", borderColor: "#2a3a57", shadowOpacity: 0 },
-  task: { backgroundColor: "#091327", borderColor: "#2d3f5e" },
-  cardTitle: { color: "#f8fafc" },
-  cardDesc: { color: "#b8c6dd" },
+  startupCard: { backgroundColor: "rgba(25,33,58,0.94)", borderColor: "#2f3e63", shadowOpacity: 0.14 },
+  formCard: { backgroundColor: "rgba(25,33,58,0.94)", borderColor: "#2f3e63", shadowOpacity: 0.14 },
+  projectRow: { backgroundColor: "rgba(25,33,58,0.94)", borderColor: "#2f3e63", shadowOpacity: 0.14 },
+  detailsHeader: { backgroundColor: "rgba(25,33,58,0.94)", borderColor: "#2f3e63", shadowOpacity: 0.14 },
+  requestCard: { backgroundColor: "rgba(25,33,58,0.94)", borderColor: "#2f3e63", shadowOpacity: 0.14 },
+  profileCard: { backgroundColor: "rgba(25,33,58,0.94)", borderColor: "#2f3e63", shadowOpacity: 0.14 },
+  statItem: { backgroundColor: "rgba(25,33,58,0.94)", borderColor: "#2f3e63", shadowOpacity: 0.14 },
+  progressTrack: { backgroundColor: "#2f3e63" },
+  progressTrackLg: { backgroundColor: "#2f3e63" },
+  receiptImage: { borderColor: "#3b4c72", backgroundColor: "#0f172a" },
+  notifCard: { backgroundColor: "#19213a", borderColor: "#2f3e63" },
+  teamRow: { backgroundColor: "#19213a", borderColor: "#2f3e63" },
+  teamChatOther: { backgroundColor: "#10182d", borderColor: "#3b4c72" },
+  teamChatName: { color: "#e7eeff" },
+  teamChatTime: { color: "#7f93b6" },
+  teamChatInputRow: { backgroundColor: "#10182d", borderColor: "#3b4c72" },
+  teamChatInput: { color: "#f5f8ff" },
+  card: { backgroundColor: "rgba(25,33,58,0.94)", borderColor: "#2f3e63", shadowOpacity: 0.14 },
+  task: { backgroundColor: "#10182d", borderColor: "#3b4c72" },
+  cardTitle: { color: "#fbfdff" },
+  cardDesc: { color: "#c8d5f1" },
 
-  detailTab: { backgroundColor: "#091327", borderColor: "#2d3f5e" },
-  detailTabActive: { backgroundColor: "#2563eb", borderColor: "#2563eb" },
-  detailTabText: { color: "#cbd9f2" },
-  adminTab: { backgroundColor: "#091327", borderColor: "#2d3f5e" },
-  adminTabActive: { backgroundColor: "#2563eb", borderColor: "#2563eb" },
-  adminTabText: { color: "#cbd9f2" },
+  detailTab: { backgroundColor: "#10182d", borderColor: "#3b4c72" },
+  detailTabActive: { backgroundColor: "#0a84ff", borderColor: "#0a84ff" },
+  detailTabText: { color: "#e7eeff" },
+  adminTab: { backgroundColor: "#10182d", borderColor: "#3b4c72" },
+  adminTabActive: { backgroundColor: "#0a84ff", borderColor: "#0a84ff" },
+  adminTabText: { color: "#e7eeff" },
 
-  badge_default: { backgroundColor: "#091327", borderColor: "#2d3f5e" },
-  badge_active: { backgroundColor: "#2563eb", borderColor: "#2563eb" },
-  badgeText_default: { color: "#dbe7ff" },
+  badge_default: { backgroundColor: "#10182d", borderColor: "#3b4c72" },
+  badge_active: { backgroundColor: "#0a84ff", borderColor: "#0a84ff" },
+  badgeText_default: { color: "#e7eeff" },
 
-  btn_secondary: { backgroundColor: "#091327", borderColor: "#2d3f5e" },
+  btn_secondary: { backgroundColor: "#10182d", borderColor: "#3b4c72" },
   btn_danger: { backgroundColor: "#3f1d2e", borderColor: "#be365f" },
-  btn_ghost: { backgroundColor: "#153260", borderColor: "#3566a8" },
-  btnTextSecondary: { color: "#e2e8f0" },
+  btn_ghost: { backgroundColor: "#22304f", borderColor: "#3b4c72" },
+  btnTextSecondary: { color: "#f5f8ff" },
 
   bottomTabWrap: {
-    backgroundColor: "#0b1325",
-    borderColor: "#273753",
+    backgroundColor: "rgba(16,24,44,0.92)",
+    borderColor: "#3b4c72",
   },
-  bottomTabItemActive: { backgroundColor: "#173056" },
+  bottomTabItemActive: { backgroundColor: "#243a61" },
   bottomTabItemCreate: {
-    backgroundColor: "#1b3f6f",
-    borderColor: "#3a6fb3",
+    backgroundColor: "#1f3660",
+    borderColor: "#2f3e63",
   },
-  bottomTabLabel: { color: "#9fb0c9" },
-  bottomTabLabelActive: { color: "#60a5fa" },
-  bottomTabBadge: { borderColor: "#0b1325", backgroundColor: "#2563eb" },
+  bottomTabLabel: { color: "#9eb0cf" },
+  bottomTabLabelActive: { color: "#64b5ff" },
+  bottomTabBadge: { borderColor: "#0f172a", backgroundColor: "#0a84ff" },
 
   onboardingOverlay: { backgroundColor: "rgba(2,6,23,0.62)" },
-  onboardingCard: { backgroundColor: "#0d1a30", borderColor: "#2a3a57" },
-  onboardingIconWrap: { backgroundColor: "#173056", borderColor: "#3d74b7" },
-  onboardingSkipText: { color: "#9fb0c9" },
-  onboardingTitle: { color: "#f8fafc" },
-  onboardingText: { color: "#b8c6dd" },
-  onboardingDot: { backgroundColor: "#334155" },
-  onboardingDotActive: { backgroundColor: "#60a5fa" },
-  onboardingHint: { color: "#9fb0c9" },
+  onboardingCard: { backgroundColor: "#19213a", borderColor: "#2f3e63" },
+  onboardingIconWrap: { backgroundColor: "#22304f", borderColor: "#2f3e63" },
+  onboardingSkipText: { color: "#9eb0cf" },
+  onboardingTitle: { color: "#fbfdff" },
+  onboardingText: { color: "#c8d5f1" },
+  onboardingDot: { backgroundColor: "#5b6b88" },
+  onboardingDotActive: { backgroundColor: "#30d158" },
+  onboardingHint: { color: "#9eb0cf" },
 
-  emptyIcon: { backgroundColor: "#173056" },
-  emptyIconText: { color: "#dbe7ff" },
-  emptyTitle: { color: "#f8fafc" },
-  emptySubtitle: { color: "#9fb0c9" },
+  emptyIcon: { backgroundColor: "#22304f" },
+  emptyIconText: { color: "#e7eeff" },
+  emptyTitle: { color: "#fbfdff" },
+  emptySubtitle: { color: "#9eb0cf" },
 
-  aiFab: { backgroundColor: "#2563eb", borderColor: "#0b1325" },
-  aiFabActive: { backgroundColor: "#f43f5e" },
+  aiFab: { backgroundColor: "#0a84ff", borderColor: "#3b4c72" },
+  aiFabActive: { backgroundColor: "#ef4444" },
   authOverlay: { backgroundColor: "rgba(2,6,23,0.5)" },
   modalOverlay: { backgroundColor: "rgba(2,6,23,0.44)" },
   aiOverlay: { backgroundColor: "rgba(2,6,23,0.46)" },
-  authCard: { backgroundColor: "#0b1325", borderColor: "#2a3a57" },
-  modalCard: { backgroundColor: "#0b1325", borderColor: "#2a3a57" },
-  aiCard: { backgroundColor: "#0f172a", borderColor: "#2a3a57" },
-  aiHeaderIcon: { backgroundColor: "#173056", borderColor: "#3d74b7" },
-  aiTitle: { color: "#f8fafc" },
-  aiSubtitle: { color: "#9fb0c9" },
-  aiCloseBtn: { backgroundColor: "#132039", borderColor: "#2f425f" },
-  aiMessages: { borderColor: "#2a3a57", backgroundColor: "#091327" },
-  chatAi: { backgroundColor: "#091327", borderColor: "#2d3f5e" },
-  aiInputRow: { backgroundColor: "#091327", borderColor: "#2d3f5e" },
-  aiInput: { color: "#e2e8f0" },
-  aiSendBtnDisabled: { backgroundColor: "#334155" },
-  chatText: { color: "#e2e8f0" },
+  authCard: { backgroundColor: "rgba(15,23,42,0.95)", borderColor: "#2f3e63" },
+  modalCard: { backgroundColor: "rgba(15,23,42,0.96)", borderColor: "#2f3e63" },
+  aiCard: { backgroundColor: "rgba(16,24,45,0.97)", borderColor: "#2f3e63" },
+  aiHeaderIcon: { backgroundColor: "#22304f", borderColor: "#2f3e63" },
+  aiTitle: { color: "#fbfdff" },
+  aiSubtitle: { color: "#9eb0cf" },
+  aiCloseBtn: { backgroundColor: "#22304f", borderColor: "#3b4c72" },
+  aiMessages: { borderColor: "#2f3e63", backgroundColor: "#10182d" },
+  chatAi: { backgroundColor: "#10182d", borderColor: "#3b4c72" },
+  aiInputRow: { backgroundColor: "#10182d", borderColor: "#3b4c72" },
+  aiInput: { color: "#f5f8ff" },
+  aiSendBtnDisabled: { backgroundColor: "#5b6b88" },
+  chatText: { color: "#f5f8ff" },
 });
 
 const darkThemeStyles = Object.keys({ ...lightStyles, ...darkStyles }).reduce((acc, key) => {
@@ -3389,3 +3538,10 @@ const darkThemeStyles = Object.keys({ ...lightStyles, ...darkStyles }).reduce((a
   return acc;
 }, {});
 let styles = lightStyles;
+
+
+
+
+
+
+

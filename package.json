@@ -9,7 +9,9 @@
     "ios": "expo start --ios",
     "web": "expo start --web",
     "build:web": "expo export --platform web",
-    "start:web": "npx serve dist -l $PORT"
+    "start:web": "npx serve dist -l $PORT",
+    "server": "npm --prefix ./server run dev",
+    "server:start": "npm --prefix ./server run start"
   },
   "dependencies": {
     "@react-native-async-storage/async-storage": "2.2.0",

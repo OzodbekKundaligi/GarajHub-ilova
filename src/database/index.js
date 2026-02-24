@@ -1,5 +1,5 @@
-import AsyncStorage from "@react-native-async-storage/async-storage";
-import { APP_STORAGE_KEYS, DEFAULT_CATEGORIES } from "../constants";
+import { Platform } from "react-native";
+import { DEFAULT_CATEGORIES } from "../constants";
 
 function initialDb() {
   return {
@@ -26,6 +26,9 @@ function initialDb() {
 }
 
 let cachedDb = null;
+const FALLBACK_API_BASE =
+  Platform.OS === "android" ? "http://10.0.2.2:4100/api" : "http://localhost:4100/api";
+const API_BASE = process.env.EXPO_PUBLIC_API_BASE_URL || FALLBACK_API_BASE;
 
 function clone(value) {
   return JSON.parse(JSON.stringify(value));
@@ -74,27 +77,42 @@ async function readDb() {
   if (cachedDb) {
     return cachedDb;
   }
-
-  const raw = await AsyncStorage.getItem(APP_STORAGE_KEYS.db);
-  if (!raw) {
-    cachedDb = initialDb();
-    await AsyncStorage.setItem(APP_STORAGE_KEYS.db, JSON.stringify(cachedDb));
-    return cachedDb;
-  }
-
   try {
-    cachedDb = ensureDbShape(JSON.parse(raw));
-  } catch {
-    cachedDb = initialDb();
-    await AsyncStorage.setItem(APP_STORAGE_KEYS.db, JSON.stringify(cachedDb));
+    const response = await fetch(`${API_BASE}/state`, {
+      method: "GET",
+      headers: { Accept: "application/json" },
+    });
+    if (!response.ok) {
+      throw new Error(`Server xatoligi: ${response.status}`);
+    }
+    const json = await response.json();
+    cachedDb = ensureDbShape(json?.data || {});
+    return cachedDb;
+  } catch (error) {
+    throw new Error(
+      `MongoDB serverga ulanib bo'lmadi. EXPO_PUBLIC_API_BASE_URL ni tekshiring. (${error.message})`
+    );
   }
-
-  return cachedDb;
 }
 
 async function writeDb(db) {
   cachedDb = ensureDbShape(db);
-  await AsyncStorage.setItem(APP_STORAGE_KEYS.db, JSON.stringify(cachedDb));
+  const response = await fetch(`${API_BASE}/state`, {
+    method: "PUT",
+    headers: {
+      "Content-Type": "application/json",
+      Accept: "application/json",
+    },
+    body: JSON.stringify({ data: cachedDb }),
+  });
+  if (!response.ok) {
+    let details = "";
+    try {
+      const raw = await response.text();
+      details = raw ? ` ${raw}` : "";
+    } catch {}
+    throw new Error(`MongoDB ga saqlashda xatolik.${details}`);
+  }
   return cachedDb;
 }
 

@@ -1,6 +1,7 @@
-@'
 node_modules
 .expo
 dist
 build
-'@ | Set-Content .gitignore
+.env
+.env.*
+src/.env

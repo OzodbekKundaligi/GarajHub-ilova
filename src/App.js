@@ -434,15 +434,18 @@ export default function App() {
       const result = await ImagePicker.launchImageLibraryAsync({
         mediaTypes: ImagePicker.MediaTypeOptions.Images,
         allowsEditing: true,
-        quality: 0.8,
-        base64: true,
+        quality: 0.55,
+        base64: false,
       });
       if (result.canceled) return;
       const asset = result.assets?.[0];
       if (!asset) return;
-      const mime = asset.mimeType || "image/jpeg";
-      const value = asset.base64 ? `data:${mime};base64,${asset.base64}` : asset.uri;
-      setter(value);
+      const maxFileSizeBytes = 2 * 1024 * 1024;
+      if (asset.fileSize && asset.fileSize > maxFileSizeBytes) {
+        Alert.alert("Katta rasm", "Rasm 2MB dan kichik bo'lishi kerak.");
+        return;
+      }
+      setter(asset.uri || "");
     } catch {
       Alert.alert("Xatolik", "Rasm yuklashda muammo bo'ldi.");
     }
@@ -734,60 +737,64 @@ export default function App() {
   }
 
   async function handleAuth() {
-    const email = authForm.email.trim().toLowerCase();
-    const pass = authForm.password.trim();
-    if (!email || !pass) return Alert.alert("Xatolik", "Email va parol kiriting.");
+    try {
+      const email = authForm.email.trim().toLowerCase();
+      const pass = authForm.password.trim();
+      if (!email || !pass) return Alert.alert("Xatolik", "Email va parol kiriting.");
 
-    const closeAuthModal = () => {
-      setShowAuthModal(false);
-      setAuthMode("login");
-      setAuthForm({ name: "", email: "", phone: "", password: "", avatar: "" });
-    };
+      const closeAuthModal = () => {
+        setShowAuthModal(false);
+        setAuthMode("login");
+        setAuthForm({ name: "", email: "", phone: "", password: "", avatar: "" });
+      };
 
-    if (authMode === "login") {
-      if (email === ADMIN_EMAIL && pass === ADMIN_PASS) {
-        const adm = adminUser();
-        setCurrentUser(adm);
-        await AsyncStorage.setItem(APP_STORAGE_KEYS.currentUserId, "admin");
-        setNotifications(await dbOperations.getNotifications("admin"));
+      if (authMode === "login") {
+        if (email === ADMIN_EMAIL && pass === ADMIN_PASS) {
+          const adm = adminUser();
+          setCurrentUser(adm);
+          await AsyncStorage.setItem(APP_STORAGE_KEYS.currentUserId, "admin");
+          setNotifications(await dbOperations.getNotifications("admin"));
+          closeAuthModal();
+          navigateTo("admin", null, { skipGuard: true });
+          return;
+        }
+        const user = await dbOperations.getUserByEmail(email);
+        if (!user || user.password !== pass) return Alert.alert("Xatolik", "Email yoki parol noto'g'ri.");
+        if (user.banned) return Alert.alert("Blok", "Sizning profilingiz bloklangan.");
+        setCurrentUser(user);
+        await AsyncStorage.setItem(APP_STORAGE_KEYS.currentUserId, user.id);
+        setNotifications(await dbOperations.getNotifications(user.id));
         closeAuthModal();
-        navigateTo("admin", null, { skipGuard: true });
+        navigateTo("explore");
         return;
       }
-      const user = await dbOperations.getUserByEmail(email);
-      if (!user || user.password !== pass) return Alert.alert("Xatolik", "Email yoki parol noto'g'ri.");
-      if (user.banned) return Alert.alert("Blok", "Sizning profilingiz bloklangan.");
-      setCurrentUser(user);
-      await AsyncStorage.setItem(APP_STORAGE_KEYS.currentUserId, user.id);
-      setNotifications(await dbOperations.getNotifications(user.id));
+
+      if (!authForm.name.trim()) return Alert.alert("Xatolik", "Ism kiriting.");
+      const exists = await dbOperations.getUserByEmail(email);
+      if (exists) return Alert.alert("Xatolik", "Bu email oldin ro'yxatdan o'tgan.");
+
+      const u = {
+        id: `u_${Date.now()}`,
+        email,
+        password: pass,
+        name: authForm.name.trim(),
+        phone: authForm.phone.trim(),
+        role: "user",
+        created_at: new Date().toISOString(),
+        skills: [],
+        is_pro: false,
+        pro_since: null,
+        avatar: authForm.avatar.trim() || getAvatar(authForm.name),
+      };
+      await dbOperations.createUser(u);
+      setAllUsers((prev) => [u, ...prev]);
+      setCurrentUser(u);
+      await AsyncStorage.setItem(APP_STORAGE_KEYS.currentUserId, u.id);
       closeAuthModal();
-      navigateTo("explore");
-      return;
+      navigateTo("profile", null, { skipGuard: true });
+    } catch (error) {
+      Alert.alert("Xatolik", error?.message || "Kirish/ro'yxatdan o'tishda xatolik bo'ldi.");
     }
-
-    if (!authForm.name.trim()) return Alert.alert("Xatolik", "Ism kiriting.");
-    const exists = await dbOperations.getUserByEmail(email);
-    if (exists) return Alert.alert("Xatolik", "Bu email oldin ro'yxatdan o'tgan.");
-
-    const u = {
-      id: `u_${Date.now()}`,
-      email,
-      password: pass,
-      name: authForm.name.trim(),
-      phone: authForm.phone.trim(),
-      role: "user",
-      created_at: new Date().toISOString(),
-      skills: [],
-      is_pro: false,
-      pro_since: null,
-      avatar: authForm.avatar.trim() || getAvatar(authForm.name),
-    };
-    await dbOperations.createUser(u);
-    setAllUsers((prev) => [u, ...prev]);
-    setCurrentUser(u);
-    await AsyncStorage.setItem(APP_STORAGE_KEYS.currentUserId, u.id);
-    closeAuthModal();
-    navigateTo("profile", null, { skipGuard: true });
   }
 
   async function logout() {
@@ -798,72 +805,80 @@ export default function App() {
   }
 
   async function createStartup() {
-    if (!currentUser) return setShowAuthModal(true);
-    if (!createForm.nomi.trim() || !createForm.tavsif.trim()) return Alert.alert("Xatolik", "Nomi va tavsifni kiriting.");
-    const isProEnabled = Boolean(appSettings.pro_enabled);
-    const freeLimit = toSafePositiveInt(appSettings.startup_limit_free, 1, 1);
-    const ownedByMe = startups.filter((s) => s.egasi_id === currentUser.id).length;
-    const hasProAccess = currentUser.role === "admin" || (isProEnabled && Boolean(currentUser.is_pro));
-    if (isProEnabled && !hasProAccess && ownedByMe >= freeLimit) {
-      Alert.alert(
-        "Free limit tugadi",
-        `Oddiy tarifda ${freeLimit} ta startup yaratish mumkin. PRO orqali cheksiz yarating.`
-      );
-      navigateTo("profile");
-      setProModalOpen(true);
-      return;
-    }
+    try {
+      if (!currentUser) return setShowAuthModal(true);
+      if (!createForm.nomi.trim() || !createForm.tavsif.trim()) return Alert.alert("Xatolik", "Nomi va tavsifni kiriting.");
+      const isProEnabled = Boolean(appSettings.pro_enabled);
+      const freeLimit = toSafePositiveInt(appSettings.startup_limit_free, 1, 1);
+      const ownedByMe = startups.filter((s) => s.egasi_id === currentUser.id).length;
+      const hasProAccess = currentUser.role === "admin" || (isProEnabled && Boolean(currentUser.is_pro));
+      if (isProEnabled && !hasProAccess && ownedByMe >= freeLimit) {
+        Alert.alert(
+          "Free limit tugadi",
+          `Oddiy tarifda ${freeLimit} ta startup yaratish mumkin. PRO orqali cheksiz yarating.`
+        );
+        navigateTo("profile");
+        setProModalOpen(true);
+        return;
+      }
 
-    const s = {
-      id: `s_${Date.now()}`,
-      nomi: createForm.nomi.trim(),
-      tavsif: createForm.tavsif.trim(),
-      category: String(createForm.category || "").trim() || categories[0] || "Other",
-      kerakli_mutaxassislar: createForm.specialists.split(",").map((x) => x.trim()).filter(Boolean),
-      logo: createForm.logo.trim() || "https://via.placeholder.com/150/111/fff?text=Startup",
-      egasi_id: currentUser.id,
-      egasi_name: currentUser.name,
-      status: "pending_admin",
-      yaratilgan_vaqt: new Date().toISOString(),
-      a_zolar: [{ user_id: currentUser.id, name: currentUser.name, role: "Asoschi", joined_at: new Date().toISOString() }],
-      tasks: [],
-      github_url: createForm.github_url.trim(),
-      website_url: createForm.website_url.trim(),
-    };
-    await dbOperations.createStartup(s);
-    setStartups((prev) => [s, ...prev]);
-    await addNotification("admin", "Yangi ariza", `${s.nomi} moderatsiyaga yuborildi.`, "info");
-    setCreateForm({ nomi: "", tavsif: "", category: categories[0] || "Other", specialists: "", logo: "", github_url: "", website_url: "" });
-    navigateTo("my-projects");
+      const s = {
+        id: `s_${Date.now()}`,
+        nomi: createForm.nomi.trim(),
+        tavsif: createForm.tavsif.trim(),
+        category: String(createForm.category || "").trim() || categories[0] || "Other",
+        kerakli_mutaxassislar: createForm.specialists.split(",").map((x) => x.trim()).filter(Boolean),
+        logo: createForm.logo.trim() || "https://via.placeholder.com/150/111/fff?text=Startup",
+        egasi_id: currentUser.id,
+        egasi_name: currentUser.name,
+        status: "pending_admin",
+        yaratilgan_vaqt: new Date().toISOString(),
+        a_zolar: [{ user_id: currentUser.id, name: currentUser.name, role: "Asoschi", joined_at: new Date().toISOString() }],
+        tasks: [],
+        github_url: createForm.github_url.trim(),
+        website_url: createForm.website_url.trim(),
+      };
+      await dbOperations.createStartup(s);
+      setStartups((prev) => [s, ...prev]);
+      await addNotification("admin", "Yangi ariza", `${s.nomi} moderatsiyaga yuborildi.`, "info");
+      setCreateForm({ nomi: "", tavsif: "", category: categories[0] || "Other", specialists: "", logo: "", github_url: "", website_url: "" });
+      navigateTo("my-projects");
+    } catch (error) {
+      Alert.alert("Xatolik", error?.message || "Startup yaratishda xatolik bo'ldi.");
+    }
   }
 
   async function sendJoinRequest(startup) {
-    if (!currentUser) return setShowAuthModal(true);
-    if (startup.egasi_id === currentUser.id) return Alert.alert("Xatolik", "O'zingizning loyihangiz.");
-    if ((startup.a_zolar || []).some((m) => m.user_id === currentUser.id)) return Alert.alert("Xatolik", "Siz jamoada borsiz.");
-    const hasPendingRequest = joinRequests.some(
-      (req) => req.startup_id === startup.id && req.user_id === currentUser.id
-    );
-    if (hasPendingRequest) {
-      return Alert.alert("Kutilmoqda", "Bu loyiha uchun avval yuborgan so'rovingiz hali ko'rib chiqilmagan.");
-    }
+    try {
+      if (!currentUser) return setShowAuthModal(true);
+      if (startup.egasi_id === currentUser.id) return Alert.alert("Xatolik", "O'zingizning loyihangiz.");
+      if ((startup.a_zolar || []).some((m) => m.user_id === currentUser.id)) return Alert.alert("Xatolik", "Siz jamoada borsiz.");
+      const hasPendingRequest = joinRequests.some(
+        (req) => req.startup_id === startup.id && req.user_id === currentUser.id
+      );
+      if (hasPendingRequest) {
+        return Alert.alert("Kutilmoqda", "Bu loyiha uchun avval yuborgan so'rovingiz hali ko'rib chiqilmagan.");
+      }
 
-    const req = {
-      id: `req_${Date.now()}`,
-      startup_id: startup.id,
-      startup_name: startup.nomi,
-      user_id: currentUser.id,
-      user_name: currentUser.name,
-      user_phone: currentUser.phone,
-      specialty: "Developer",
-      comment: "Hamkorlik qilish istagi.",
-      status: "pending",
-      created_at: new Date().toISOString(),
-    };
-    await dbOperations.createJoinRequest(req);
-    setJoinRequests((prev) => [req, ...prev]);
-    await addNotification(startup.egasi_id, "Yangi ariza", `${currentUser.name} jamoaga qo'shilmoqchi.`, "info");
-    Alert.alert("Yuborildi", "So'rovingiz yuborildi.");
+      const req = {
+        id: `req_${Date.now()}`,
+        startup_id: startup.id,
+        startup_name: startup.nomi,
+        user_id: currentUser.id,
+        user_name: currentUser.name,
+        user_phone: currentUser.phone,
+        specialty: "Developer",
+        comment: "Hamkorlik qilish istagi.",
+        status: "pending",
+        created_at: new Date().toISOString(),
+      };
+      await dbOperations.createJoinRequest(req);
+      setJoinRequests((prev) => [req, ...prev]);
+      await addNotification(startup.egasi_id, "Yangi ariza", `${currentUser.name} jamoaga qo'shilmoqchi.`, "info");
+      Alert.alert("Yuborildi", "So'rovingiz yuborildi.");
+    } catch (error) {
+      Alert.alert("Xatolik", error?.message || "So'rov yuborishda xatolik bo'ldi.");
+    }
   }
 
   async function requestAction(id, action) {
@@ -890,47 +905,55 @@ export default function App() {
   }
 
   async function addTask() {
-    const startup = startups.find((s) => s.id === taskModal.startupId);
-    if (!startup) return Alert.alert("Xatolik", "Loyiha topilmadi.");
-    if (!hasStartupAccess(startup)) {
-      return Alert.alert("Ruxsat yo'q", "Bu loyiha uchun vazifa qo'shish huquqingiz yo'q.");
+    try {
+      const startup = startups.find((s) => s.id === taskModal.startupId);
+      if (!startup) return Alert.alert("Xatolik", "Loyiha topilmadi.");
+      if (!hasStartupAccess(startup)) {
+        return Alert.alert("Ruxsat yo'q", "Bu loyiha uchun vazifa qo'shish huquqingiz yo'q.");
+      }
+      if (!taskModal.title.trim()) return Alert.alert("Xatolik", "Vazifa nomi kerak.");
+      const t = {
+        id: `t_${Date.now()}`,
+        startup_id: taskModal.startupId,
+        title: taskModal.title.trim(),
+        description: taskModal.description.trim(),
+        assigned_to_id: currentUser?.id || "",
+        assigned_to_name: currentUser?.name || "Belgilanmagan",
+        deadline: taskModal.deadline.trim(),
+        status: "todo",
+      };
+      await dbOperations.createTask(t);
+      const refreshed = await dbOperations.getStartups();
+      const afterReminder = await runDeadlineReminderSweep(refreshed);
+      setStartups(afterReminder);
+      if (currentUser) {
+        const notifUserId = currentUser.role === "admin" ? "admin" : currentUser.id;
+        setNotifications(await dbOperations.getNotifications(notifUserId));
+      }
+      setTaskModal({ open: false, startupId: "", title: "", description: "", deadline: "" });
+    } catch (error) {
+      Alert.alert("Xatolik", error?.message || "Vazifa qo'shishda xatolik bo'ldi.");
     }
-    if (!taskModal.title.trim()) return Alert.alert("Xatolik", "Vazifa nomi kerak.");
-    const t = {
-      id: `t_${Date.now()}`,
-      startup_id: taskModal.startupId,
-      title: taskModal.title.trim(),
-      description: taskModal.description.trim(),
-      assigned_to_id: currentUser?.id || "",
-      assigned_to_name: currentUser?.name || "Belgilanmagan",
-      deadline: taskModal.deadline.trim(),
-      status: "todo",
-    };
-    await dbOperations.createTask(t);
-    const refreshed = await dbOperations.getStartups();
-    const afterReminder = await runDeadlineReminderSweep(refreshed);
-    setStartups(afterReminder);
-    if (currentUser) {
-      const notifUserId = currentUser.role === "admin" ? "admin" : currentUser.id;
-      setNotifications(await dbOperations.getNotifications(notifUserId));
-    }
-    setTaskModal({ open: false, startupId: "", title: "", description: "", deadline: "" });
   }
 
   async function moveTask(taskId, status) {
-    const startup = startups.find((s) => (s.tasks || []).some((t) => t.id === taskId));
-    if (!startup) return;
-    if (!hasStartupAccess(startup)) {
-      Alert.alert("Ruxsat yo'q", "Bu vazifani yangilash huquqingiz yo'q.");
-      return;
-    }
-    await dbOperations.updateTaskStatus(taskId, status);
-    const refreshed = await dbOperations.getStartups();
-    const afterReminder = await runDeadlineReminderSweep(refreshed);
-    setStartups(afterReminder);
-    if (currentUser) {
-      const notifUserId = currentUser.role === "admin" ? "admin" : currentUser.id;
-      setNotifications(await dbOperations.getNotifications(notifUserId));
+    try {
+      const startup = startups.find((s) => (s.tasks || []).some((t) => t.id === taskId));
+      if (!startup) return;
+      if (!hasStartupAccess(startup)) {
+        Alert.alert("Ruxsat yo'q", "Bu vazifani yangilash huquqingiz yo'q.");
+        return;
+      }
+      await dbOperations.updateTaskStatus(taskId, status);
+      const refreshed = await dbOperations.getStartups();
+      const afterReminder = await runDeadlineReminderSweep(refreshed);
+      setStartups(afterReminder);
+      if (currentUser) {
+        const notifUserId = currentUser.role === "admin" ? "admin" : currentUser.id;
+        setNotifications(await dbOperations.getNotifications(notifUserId));
+      }
+    } catch (error) {
+      Alert.alert("Xatolik", error?.message || "Task statusini yangilab bo'lmadi.");
     }
   }
 

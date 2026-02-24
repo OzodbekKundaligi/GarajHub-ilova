@@ -19,6 +19,11 @@
 
 Web build chiqarilganda frontend API'ni avtomatik `https://YOUR_DOMAIN/api` orqali uradi.
 
+Muhim:
+- Railway portni o'zi beradi (`PORT`, ko'pincha `8080`) va bu to'g'ri.
+- Local developda server default `4100` portda ishlaydi.
+- `4100` ni Railway'da majburlash shart emas; app `process.env.PORT` ni oladi.
+
 ## MongoDB ulanishi
 
 Default API:

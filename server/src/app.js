@@ -25,9 +25,10 @@ async function getOrCreateState() {
 
 export function createApp({ corsOrigin = "*", webDistPath = "" } = {}) {
   const app = express();
+  const jsonLimit = process.env.API_JSON_LIMIT || "20mb";
 
   app.use(cors({ origin: corsOrigin === "*" ? true : corsOrigin }));
-  app.use(express.json({ limit: "30mb" }));
+  app.use(express.json({ limit: jsonLimit }));
 
   app.get("/api/health", (_, res) => {
     res.json({ ok: true, service: "garajhub-mobile-server", time: new Date().toISOString() });
@@ -50,7 +51,7 @@ export function createApp({ corsOrigin = "*", webDistPath = "" } = {}) {
         { key: STATE_KEY, data: payload },
         { upsert: true, new: true, setDefaultsOnInsert: true }
       );
-      res.json({ ok: true, data: payload });
+      res.json({ ok: true });
     } catch (error) {
       res.status(500).json({ message: "State saqlashda xatolik", error: error.message });
     }
@@ -82,6 +83,33 @@ export function createApp({ corsOrigin = "*", webDistPath = "" } = {}) {
       res.sendFile(distIndexPath);
     });
   }
+
+  app.use((error, req, res, _next) => {
+    if (res.headersSent) return;
+
+    if (error?.type === "request.aborted") {
+      res.status(499).json({ message: "So'rov client tomonidan bekor qilindi." });
+      return;
+    }
+
+    if (error?.type === "entity.too.large") {
+      res.status(413).json({ message: "Yuborilgan ma'lumot hajmi juda katta." });
+      return;
+    }
+
+    if (error instanceof SyntaxError && error?.status === 400 && "body" in error) {
+      res.status(400).json({ message: "JSON formati noto'g'ri." });
+      return;
+    }
+
+    // eslint-disable-next-line no-console
+    console.error("[garajhub-mobile-server] request error", {
+      path: req?.path,
+      method: req?.method,
+      message: error?.message,
+    });
+    res.status(500).json({ message: "Serverda ichki xatolik yuz berdi." });
+  });
 
   return app;
 }

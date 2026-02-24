@@ -54,7 +54,8 @@ function resolveApiBaseCandidates() {
       return [
         normalizeApiBase(`http://${localHost}:4100/api`),
         "http://127.0.0.1:4100/api",
-        originApi,
+        normalizeApiBase(`http://${localHost}:8080/api`),
+        "http://127.0.0.1:8080/api",
       ];
     }
     return [originApi];
@@ -101,6 +102,36 @@ async function parseJsonResponse(response, requestUrl) {
   return response.json();
 }
 
+function getRequestTimeoutMs() {
+  const parsed = Number.parseInt(String(process.env.EXPO_PUBLIC_API_TIMEOUT_MS || ""), 10);
+  if (Number.isFinite(parsed) && parsed >= 3000) {
+    return parsed;
+  }
+  return 12000;
+}
+
+async function fetchWithTimeout(url, options = {}, timeoutMs = getRequestTimeoutMs()) {
+  const controller = typeof AbortController !== "undefined" ? new AbortController() : null;
+  let timeoutId = null;
+
+  try {
+    if (controller) {
+      timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+    }
+    return await fetch(url, {
+      ...options,
+      ...(controller ? { signal: controller.signal } : {}),
+    });
+  } catch (error) {
+    if (error?.name === "AbortError") {
+      throw new Error(`So'rov vaqti tugadi (${timeoutMs}ms): ${url}`);
+    }
+    throw error;
+  } finally {
+    if (timeoutId) clearTimeout(timeoutId);
+  }
+}
+
 function clone(value) {
   return JSON.parse(JSON.stringify(value));
 }
@@ -109,18 +140,37 @@ function nowIso() {
   return new Date().toISOString();
 }
 
+const MAX_DATA_IMAGE_LENGTH = 260000;
+const DEFAULT_STARTUP_LOGO_URL = "https://via.placeholder.com/150/0a84ff/ffffff?text=Startup";
+const DEFAULT_AVATAR_URL = "https://ui-avatars.com/api/?name=User&background=111&color=fff";
+const MAX_AUDIT_LOGS = 1200;
+const MAX_NOTIFICATIONS = 2500;
+const MAX_CHAT_MESSAGES = 500;
+
+function sanitizeDataImage(value, fallback = "") {
+  const normalized = String(value || "").trim();
+  if (!normalized) return fallback;
+  if (!normalized.startsWith("data:image/")) return normalized;
+  if (normalized.length <= MAX_DATA_IMAGE_LENGTH) return normalized;
+  return fallback;
+}
+
 function ensureDbShape(db) {
   const shaped = { ...initialDb(), ...(db || {}) };
   shaped.users = Array.isArray(shaped.users) ? shaped.users : [];
   shaped.users = shaped.users.map((u) => ({
     ...u,
+    avatar: sanitizeDataImage(u.avatar, DEFAULT_AVATAR_URL),
     is_pro: Boolean(u.is_pro),
     pro_since: u.pro_since || null,
   }));
   shaped.startups = Array.isArray(shaped.startups) ? shaped.startups : [];
   shaped.startups = shaped.startups.map((s) => ({
     ...s,
-    chat_messages: Array.isArray(s.chat_messages) ? s.chat_messages : [],
+    logo: sanitizeDataImage(s.logo, DEFAULT_STARTUP_LOGO_URL),
+    chat_messages: Array.isArray(s.chat_messages)
+      ? s.chat_messages.slice(-MAX_CHAT_MESSAGES)
+      : [],
     tasks: Array.isArray(s.tasks)
       ? s.tasks.map((t) => ({
           ...t,
@@ -130,6 +180,7 @@ function ensureDbShape(db) {
   }));
   shaped.joinRequests = Array.isArray(shaped.joinRequests) ? shaped.joinRequests : [];
   shaped.notifications = Array.isArray(shaped.notifications) ? shaped.notifications : [];
+  shaped.notifications = shaped.notifications.slice(0, MAX_NOTIFICATIONS);
   shaped.categories = Array.isArray(shaped.categories) && shaped.categories.length > 0
     ? shaped.categories
     : initialDb().categories;
@@ -138,8 +189,12 @@ function ensureDbShape(db) {
     ...t,
     deadline_reminder_sent_at: t.deadline_reminder_sent_at || null,
   }));
-  shaped.auditLogs = Array.isArray(shaped.auditLogs) ? shaped.auditLogs : [];
+  shaped.auditLogs = Array.isArray(shaped.auditLogs) ? shaped.auditLogs.slice(0, MAX_AUDIT_LOGS) : [];
   shaped.proRequests = Array.isArray(shaped.proRequests) ? shaped.proRequests : [];
+  shaped.proRequests = shaped.proRequests.map((request) => ({
+    ...request,
+    receipt_image: sanitizeDataImage(request.receipt_image, ""),
+  }));
   shaped.settings = { ...initialDb().settings, ...(shaped.settings || {}) };
   return shaped;
 }
@@ -155,7 +210,7 @@ async function readDb() {
   for (const base of candidates) {
     try {
       const requestUrl = `${base}/state`;
-      const response = await fetch(requestUrl, {
+      const response = await fetchWithTimeout(requestUrl, {
         method: "GET",
         headers: { Accept: "application/json" },
       });
@@ -183,7 +238,7 @@ async function writeDb(db) {
   for (const base of candidates) {
     try {
       const requestUrl = `${base}/state`;
-      const response = await fetch(requestUrl, {
+      const response = await fetchWithTimeout(requestUrl, {
         method: "PUT",
         headers: {
           "Content-Type": "application/json",
@@ -199,15 +254,30 @@ async function writeDb(db) {
     }
   }
 
-  throw new Error(`MongoDB ga saqlashda xatolik. ${lastError?.message || ""}`);
+  throw new Error(
+    `MongoDB ga saqlashda xatolik. Tried: ${candidates.join(", ")}. ${
+      lastError?.message || "Noma'lum xatolik"
+    }`
+  );
 }
 
+let mutationQueue = Promise.resolve();
+
 async function mutate(mutator) {
-  const current = await readDb();
-  const draft = clone(current);
-  const result = await mutator(draft);
-  await writeDb(draft);
-  return result;
+  const run = async () => {
+    const current = await readDb();
+    const draft = clone(current);
+    const result = await mutator(draft);
+    await writeDb(draft);
+    return result;
+  };
+
+  const next = mutationQueue.then(run, run);
+  mutationQueue = next.then(
+    () => undefined,
+    () => undefined
+  );
+  return next;
 }
 
 function addAuditLog(db, action, entityType, entityId, actorId = "system") {

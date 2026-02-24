@@ -9,9 +9,22 @@
 5. `npm run server` (yoki yangi terminalda `cd server && npm run start`)
 6. boshqa terminalda `npm start`
 
+## Production (Railway)
+
+`web` va `api` bitta serverda ishlaydi:
+
+1. Railway'da `MONGODB_URI` env ni qo'ying.
+2. Start command: `npm run start:railway`
+3. `Procfile` ham shu scriptga yo'naltirilgan.
+
+Web build chiqarilganda frontend API'ni avtomatik `https://YOUR_DOMAIN/api` orqali uradi.
+
 ## MongoDB ulanishi
 
-Default API: `http://localhost:4100/api`
+Default API:
+
+- Web production: avtomatik `window.location.origin + /api`
+- Local: `http://localhost:4100/api`
 
 Android emulator uchun default avtomatik `http://10.0.2.2:4100/api` ga o'tadi.
 

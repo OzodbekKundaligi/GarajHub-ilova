@@ -26,9 +26,80 @@ function initialDb() {
 }
 
 let cachedDb = null;
-const FALLBACK_API_BASE =
-  Platform.OS === "android" ? "http://10.0.2.2:4100/api" : "http://localhost:4100/api";
-const API_BASE = process.env.EXPO_PUBLIC_API_BASE_URL || FALLBACK_API_BASE;
+
+function normalizeApiBase(value) {
+  return String(value || "").trim().replace(/\/+$/, "");
+}
+
+function isLocalWebDev() {
+  if (Platform.OS !== "web" || typeof window === "undefined") return false;
+  const host = String(window.location.hostname || "").toLowerCase();
+  const port = String(window.location.port || "");
+  const localHosts = ["localhost", "127.0.0.1", "0.0.0.0"];
+  const devPorts = ["8081", "19000", "19006", "3000", "5173"];
+  return localHosts.includes(host) && devPorts.includes(port);
+}
+
+function resolveApiBaseCandidates() {
+  const envBase = String(process.env.EXPO_PUBLIC_API_BASE_URL || "").trim();
+  if (envBase) {
+    return [normalizeApiBase(envBase)];
+  }
+
+  if (Platform.OS === "web" && typeof window !== "undefined") {
+    const originApi = normalizeApiBase(`${window.location.origin}/api`);
+    if (isLocalWebDev()) {
+      const host = String(window.location.hostname || "localhost");
+      const localHost = host === "0.0.0.0" ? "localhost" : host;
+      return [
+        normalizeApiBase(`http://${localHost}:4100/api`),
+        "http://127.0.0.1:4100/api",
+        originApi,
+      ];
+    }
+    return [originApi];
+  }
+
+  const fallback =
+    Platform.OS === "android" ? "http://10.0.2.2:4100/api" : "http://localhost:4100/api";
+  return [normalizeApiBase(fallback)];
+}
+
+const API_BASE_CANDIDATES = resolveApiBaseCandidates();
+let apiBaseInUse = API_BASE_CANDIDATES[0];
+
+function getApiCandidatesInOrder() {
+  const uniq = [];
+  [apiBaseInUse, ...API_BASE_CANDIDATES]
+    .map(normalizeApiBase)
+    .filter(Boolean)
+    .forEach((base) => {
+      if (!uniq.includes(base)) uniq.push(base);
+    });
+  return uniq;
+}
+
+async function parseJsonResponse(response, requestUrl) {
+  if (!response.ok) {
+    let body = "";
+    try {
+      body = await response.text();
+    } catch {}
+    throw new Error(`Server xatoligi: ${response.status}${body ? ` ${body}` : ""}`);
+  }
+
+  const contentType = String(response.headers.get("content-type") || "").toLowerCase();
+  if (!contentType.includes("application/json")) {
+    let body = "";
+    try {
+      body = await response.text();
+    } catch {}
+    const shortBody = body ? ` ${body.slice(0, 140)}` : "";
+    throw new Error(`API JSON qaytarmadi (${requestUrl}).${shortBody}`);
+  }
+
+  return response.json();
+}
 
 function clone(value) {
   return JSON.parse(JSON.stringify(value));
@@ -77,43 +148,58 @@ async function readDb() {
   if (cachedDb) {
     return cachedDb;
   }
-  try {
-    const response = await fetch(`${API_BASE}/state`, {
-      method: "GET",
-      headers: { Accept: "application/json" },
-    });
-    if (!response.ok) {
-      throw new Error(`Server xatoligi: ${response.status}`);
+
+  const candidates = getApiCandidatesInOrder();
+  let lastError = null;
+
+  for (const base of candidates) {
+    try {
+      const requestUrl = `${base}/state`;
+      const response = await fetch(requestUrl, {
+        method: "GET",
+        headers: { Accept: "application/json" },
+      });
+      const json = await parseJsonResponse(response, requestUrl);
+      cachedDb = ensureDbShape(json?.data || {});
+      apiBaseInUse = base;
+      return cachedDb;
+    } catch (error) {
+      lastError = error;
     }
-    const json = await response.json();
-    cachedDb = ensureDbShape(json?.data || {});
-    return cachedDb;
-  } catch (error) {
-    throw new Error(
-      `MongoDB serverga ulanib bo'lmadi. EXPO_PUBLIC_API_BASE_URL ni tekshiring. (${error.message})`
-    );
   }
+
+  const debugBases = candidates.join(", ");
+  throw new Error(
+    `MongoDB serverga ulanib bo'lmadi. Tekshiring: EXPO_PUBLIC_API_BASE_URL, server, MONGODB_URI. Tried: ${debugBases}. (${lastError?.message || "Noma'lum xatolik"})`
+  );
 }
 
 async function writeDb(db) {
   cachedDb = ensureDbShape(db);
-  const response = await fetch(`${API_BASE}/state`, {
-    method: "PUT",
-    headers: {
-      "Content-Type": "application/json",
-      Accept: "application/json",
-    },
-    body: JSON.stringify({ data: cachedDb }),
-  });
-  if (!response.ok) {
-    let details = "";
+
+  const candidates = getApiCandidatesInOrder();
+  let lastError = null;
+
+  for (const base of candidates) {
     try {
-      const raw = await response.text();
-      details = raw ? ` ${raw}` : "";
-    } catch {}
-    throw new Error(`MongoDB ga saqlashda xatolik.${details}`);
+      const requestUrl = `${base}/state`;
+      const response = await fetch(requestUrl, {
+        method: "PUT",
+        headers: {
+          "Content-Type": "application/json",
+          Accept: "application/json",
+        },
+        body: JSON.stringify({ data: cachedDb }),
+      });
+      await parseJsonResponse(response, requestUrl);
+      apiBaseInUse = base;
+      return cachedDb;
+    } catch (error) {
+      lastError = error;
+    }
   }
-  return cachedDb;
+
+  throw new Error(`MongoDB ga saqlashda xatolik. ${lastError?.message || ""}`);
 }
 
 async function mutate(mutator) {
@@ -270,8 +356,15 @@ export const dbOperations = {
       if (index < 0) {
         throw new Error("Startup topilmadi");
       }
+      const current = db.startups[index];
+      if (current.status !== "pending_admin") {
+        throw new Error("Bu startup allaqachon ko'rib chiqilgan.");
+      }
+      if (!["approved", "rejected"].includes(status)) {
+        throw new Error("Noto'g'ri status qiymati.");
+      }
       db.startups[index] = {
-        ...db.startups[index],
+        ...current,
         status,
         rejection_reason: reason || "",
       };

@@ -1,5 +1,7 @@
 import cors from "cors";
 import express from "express";
+import { existsSync } from "node:fs";
+import path from "node:path";
 import AppState from "./models/AppState.js";
 import { ensureDbShape, initialDb } from "./defaults.js";
 
@@ -21,7 +23,7 @@ async function getOrCreateState() {
   return data;
 }
 
-export function createApp({ corsOrigin = "*" } = {}) {
+export function createApp({ corsOrigin = "*", webDistPath = "" } = {}) {
   const app = express();
 
   app.use(cors({ origin: corsOrigin === "*" ? true : corsOrigin }));
@@ -67,6 +69,19 @@ export function createApp({ corsOrigin = "*" } = {}) {
       res.status(500).json({ message: "State resetda xatolik", error: error.message });
     }
   });
+
+  const distIndexPath = webDistPath ? path.join(webDistPath, "index.html") : "";
+  if (webDistPath && existsSync(distIndexPath)) {
+    app.use(express.static(webDistPath, { index: false, maxAge: "1h" }));
+
+    app.get("*", (req, res, next) => {
+      if (req.path.startsWith("/api")) {
+        next();
+        return;
+      }
+      res.sendFile(distIndexPath);
+    });
+  }
 
   return app;
 }

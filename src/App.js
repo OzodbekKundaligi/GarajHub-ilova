@@ -77,6 +77,7 @@ const DEFAULT_APP_SETTINGS = {
 const THEME_STORAGE_KEY = "@garajhub_theme_mode";
 const ONBOARDING_STORAGE_KEY = "@garajhub_onboarding_v1";
 const IS_ANDROID = Platform.OS === "android";
+const IS_WEB = Platform.OS === "web";
 const FONT_DISPLAY = Platform.select({
   ios: "System",
   android: "sans-serif-medium",
@@ -221,11 +222,12 @@ const EmptyState = ({ title, subtitle, action }) => (
   </View>
 );
 
-const Btn = ({ title, onPress, type = "primary", small = false, style, textStyle, icon }) => (
+const Btn = ({ title, onPress, type = "primary", small = false, style, textStyle, icon, disabled = false }) => (
   <TouchableOpacity
     onPress={onPress}
-    style={[styles.btn, styles[`btn_${type}`], small && styles.btnSmall, style]}
-    activeOpacity={0.8}
+    style={[styles.btn, styles[`btn_${type}`], small && styles.btnSmall, disabled && styles.btnDisabled, style]}
+    activeOpacity={disabled ? 1 : 0.8}
+    disabled={disabled}
   >
     <View style={styles.btnInner}>
       {!!icon && (
@@ -326,6 +328,7 @@ export default function App() {
   const [proModalOpen, setProModalOpen] = useState(false);
   const [proReceipt, setProReceipt] = useState("");
   const [proNote, setProNote] = useState("");
+  const [moderationBusyId, setModerationBusyId] = useState("");
 
   const [createForm, setCreateForm] = useState({
     nomi: "",
@@ -1006,11 +1009,37 @@ export default function App() {
   }
 
   async function adminSetStartupStatus(startupId, status) {
+    if (!currentUser || currentUser.role !== "admin") return;
+    if (moderationBusyId === startupId) return;
+    const target = startups.find((s) => s.id === startupId);
+    if (!target) {
+      Alert.alert("Xatolik", "Startup topilmadi.");
+      return;
+    }
+    if (target.status !== "pending_admin") {
+      Alert.alert("Ma'lumot", "Bu startup allaqachon ko'rib chiqilgan.");
+      navigateTo("explore");
+      return;
+    }
     const reason = status === "rejected" ? "Admin tomonidan rad etildi" : "";
-    const updated = await dbOperations.updateStartupStatus(startupId, status, reason, currentUser?.id);
-    setStartups((prev) => prev.map((s) => (s.id === startupId ? updated : s)));
-    if (updated?.egasi_id) {
-      await addNotification(updated.egasi_id, status === "approved" ? "Tasdiqlandi" : "Rad etildi", `${updated.nomi} - ${status}`, status === "approved" ? "success" : "danger");
+    setModerationBusyId(startupId);
+    try {
+      const updated = await dbOperations.updateStartupStatus(startupId, status, reason, currentUser?.id);
+      setStartups((prev) => prev.map((s) => (s.id === startupId ? updated : s)));
+      if (updated?.egasi_id) {
+        await addNotification(
+          updated.egasi_id,
+          status === "approved" ? "Tasdiqlandi" : "Rad etildi",
+          `${updated.nomi} - ${status}`,
+          status === "approved" ? "success" : "danger"
+        );
+      }
+      setAdminTab("dashboard");
+      navigateTo("explore");
+    } catch (error) {
+      Alert.alert("Xatolik", error?.message || "Moderatsiya vaqtida xatolik bo'ldi.");
+    } finally {
+      setModerationBusyId("");
     }
   }
 
@@ -1377,23 +1406,44 @@ export default function App() {
       },
     ],
   });
-  const contentMaxWidth = isTabletLayout ? 860 : 680;
+  const isMobileWeb = IS_WEB && screenWidth <= 640;
+  const showHeaderStats = !isMobileWeb;
+  const showDecorativeOrbs = !isMobileWeb;
+  const contentMaxWidth = isTabletLayout ? 860 : isMobileWeb ? 560 : 680;
   const screenContentStyle = {
-    paddingHorizontal: isCompact ? 10 : 16,
-    paddingBottom: isCompact ? 180 : 210,
+    paddingHorizontal: isMobileWeb ? 12 : isCompact ? 10 : 16,
+    paddingBottom: isMobileWeb ? 124 : isCompact ? 180 : 210,
     paddingTop: isVeryCompact ? 10 : 14,
     width: "100%",
     maxWidth: contentMaxWidth,
     alignSelf: "center",
   };
   const bottomTabInlineStyle = {
-    left: isCompact ? 8 : 14,
-    right: isCompact ? 8 : 14,
-    bottom: Platform.OS === "ios" ? (isCompact ? 10 : 14) : 16,
+    left: isMobileWeb ? 10 : isCompact ? 8 : 14,
+    right: isMobileWeb ? 10 : isCompact ? 8 : 14,
+    bottom:
+      Platform.OS === "ios"
+        ? isCompact
+          ? 10
+          : 14
+        : IS_WEB
+        ? isCompact
+          ? 10
+          : 12
+        : 16,
   };
   const aiFabInlineStyle = {
     right: isCompact ? 12 : 16,
-    bottom: Platform.OS === "ios" ? (isCompact ? 96 : 104) : 94,
+    bottom:
+      Platform.OS === "ios"
+        ? isCompact
+          ? 96
+          : 104
+        : IS_WEB
+        ? isCompact
+          ? 86
+          : 92
+        : 94,
   };
   const drawerWidth = Math.min(360, Math.max(292, screenWidth * 0.88));
   const drawerHiddenX = -drawerWidth - 28;
@@ -1429,8 +1479,12 @@ export default function App() {
   return (
     <SafeAreaView style={styles.container}>
       <View pointerEvents="none" style={styles.bgLayer}>
-        <View style={styles.bgOrbLarge} />
-        <View style={styles.bgOrbMedium} />
+        {showDecorativeOrbs && (
+          <>
+            <View style={[styles.bgOrbLarge, isMobileWeb && styles.bgOrbLargeCompact]} />
+            <View style={[styles.bgOrbMedium, isMobileWeb && styles.bgOrbMediumCompact]} />
+          </>
+        )}
       </View>
       <StatusBar
         barStyle={isDarkMode ? "light-content" : "dark-content"}
@@ -1443,9 +1497,6 @@ export default function App() {
             <TouchableOpacity style={styles.headerIconBtn} onPress={openMenu}>
               <Ionicons name="menu-outline" size={20} color={isDarkMode ? "#f5f8ff" : "#0f172a"} />
             </TouchableOpacity>
-            <View style={styles.brandMark}>
-              <Image source={require("../assets/icon.png")} style={styles.brandMarkImage} />
-            </View>
             <View style={styles.titleWrap}>
               <Text style={styles.title}>GarajHub</Text>
               <Text style={styles.topSubtitle}>{activeTabLabel}</Text>
@@ -1465,34 +1516,36 @@ export default function App() {
             </TouchableOpacity>
           </View>
         </View>
-        <View style={[styles.headerStatsRow, isCompact && styles.headerStatsRowCompact]}>
-          <TouchableOpacity
-            activeOpacity={0.86}
-            style={styles.headerStatCard}
-            onPress={() => navigateTo("explore")}
-          >
-            <Text style={styles.headerStatValue}>{startups.filter((s) => s.status === "approved").length}</Text>
-            <Text style={styles.headerStatLabel}>Faol startup</Text>
-          </TouchableOpacity>
-          <TouchableOpacity
-            activeOpacity={0.86}
-            style={styles.headerStatCard}
-            onPress={() => navigateTo("requests")}
-          >
-            <Text style={styles.headerStatValue}>{incomingRequests.length}</Text>
-            <Text style={styles.headerStatLabel}>So'rovlar</Text>
-          </TouchableOpacity>
-          <TouchableOpacity
-            activeOpacity={0.86}
-            style={styles.headerStatCard}
-            onPress={() => navigateTo("profile")}
-          >
-            <Text style={styles.headerStatValue}>
-              {currentUser ? (isProActive ? "PRO" : "FREE") : "Guest"}
-            </Text>
-            <Text style={styles.headerStatLabel}>Tarif</Text>
-          </TouchableOpacity>
-        </View>
+        {showHeaderStats && (
+          <View style={[styles.headerStatsRow, isCompact && styles.headerStatsRowCompact]}>
+            <TouchableOpacity
+              activeOpacity={0.86}
+              style={styles.headerStatCard}
+              onPress={() => navigateTo("explore")}
+            >
+              <Text style={styles.headerStatValue}>{startups.filter((s) => s.status === "approved").length}</Text>
+              <Text style={styles.headerStatLabel}>Faol startup</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              activeOpacity={0.86}
+              style={styles.headerStatCard}
+              onPress={() => navigateTo("requests")}
+            >
+              <Text style={styles.headerStatValue}>{incomingRequests.length}</Text>
+              <Text style={styles.headerStatLabel}>So'rovlar</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              activeOpacity={0.86}
+              style={styles.headerStatCard}
+              onPress={() => navigateTo("profile")}
+            >
+              <Text style={styles.headerStatValue}>
+                {currentUser ? (isProActive ? "PRO" : "FREE") : "Guest"}
+              </Text>
+              <Text style={styles.headerStatLabel}>Tarif</Text>
+            </TouchableOpacity>
+          </View>
+        )}
       </View>
 
       <Modal visible={isMenuOpen} transparent animationType="fade" onRequestClose={closeMenu}>
@@ -1703,7 +1756,22 @@ export default function App() {
                 </View>
                 <Field label="Nomi" value={createForm.nomi} onChangeText={(v) => setCreateForm((p) => ({ ...p, nomi: v }))} placeholder="Startup nomi" />
                 <Field label="Tavsif" value={createForm.tavsif} onChangeText={(v) => setCreateForm((p) => ({ ...p, tavsif: v }))} placeholder="Qisqacha..." multiline />
-                <Field label="Kategoriya" value={createForm.category} onChangeText={(v) => setCreateForm((p) => ({ ...p, category: v }))} placeholder="Fintech" />
+                <View style={{ marginBottom: 10 }}>
+                  <Text style={styles.label}>Kategoriya</Text>
+                  <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.chipsWrap}>
+                    {(categories.length > 0 ? categories : ["Other"]).map((categoryName) => (
+                      <TouchableOpacity
+                        key={`create_cat_${categoryName}`}
+                        onPress={() => setCreateForm((p) => ({ ...p, category: categoryName }))}
+                        style={[styles.chip, createForm.category === categoryName && styles.chipActive]}
+                      >
+                        <Text style={[styles.chipText, createForm.category === categoryName && styles.chipTextActive]}>
+                          {categoryName}
+                        </Text>
+                      </TouchableOpacity>
+                    ))}
+                  </ScrollView>
+                </View>
                 <Field label="Mutaxassislar" value={createForm.specialists} onChangeText={(v) => setCreateForm((p) => ({ ...p, specialists: v }))} placeholder="Frontend, Backend" />
                 <ImagePickerField
                   label="Startup logosi"
@@ -2122,8 +2190,21 @@ export default function App() {
                   </View>
                   <Text style={styles.muted}>{s.egasi_name}</Text>
                   <View style={styles.rowNoWrap}>
-                    <Btn title="Approve" icon="checkmark-circle-outline" small onPress={() => adminSetStartupStatus(s.id, "approved")} />
-                    <Btn title="Reject" icon="close-circle-outline" small type="danger" onPress={() => adminSetStartupStatus(s.id, "rejected")} />
+                    <Btn
+                      title="Approve"
+                      icon="checkmark-circle-outline"
+                      small
+                      disabled={moderationBusyId === s.id}
+                      onPress={() => adminSetStartupStatus(s.id, "approved")}
+                    />
+                    <Btn
+                      title="Reject"
+                      icon="close-circle-outline"
+                      small
+                      type="danger"
+                      disabled={moderationBusyId === s.id}
+                      onPress={() => adminSetStartupStatus(s.id, "rejected")}
+                    />
                   </View>
                 </View>
               ))
@@ -2156,8 +2237,27 @@ export default function App() {
                 </View>
                 <Text style={styles.muted}>{s.egasi_name}</Text>
                 <View style={styles.rowNoWrap}>
-                  <Btn title="Approve" icon="checkmark-circle-outline" small onPress={() => adminSetStartupStatus(s.id, "approved")} />
-                  <Btn title="Reject" icon="close-circle-outline" small type="danger" onPress={() => adminSetStartupStatus(s.id, "rejected")} />
+                  {s.status === "pending_admin" ? (
+                    <>
+                      <Btn
+                        title="Approve"
+                        icon="checkmark-circle-outline"
+                        small
+                        disabled={moderationBusyId === s.id}
+                        onPress={() => adminSetStartupStatus(s.id, "approved")}
+                      />
+                      <Btn
+                        title="Reject"
+                        icon="close-circle-outline"
+                        small
+                        type="danger"
+                        disabled={moderationBusyId === s.id}
+                        onPress={() => adminSetStartupStatus(s.id, "rejected")}
+                      />
+                    </>
+                  ) : (
+                    <Text style={styles.tinyMuted}>Ko'rib chiqilgan</Text>
+                  )}
                   <Btn title="Delete" icon="trash-outline" small type="ghost" onPress={() => adminDeleteStartup(s.id)} />
                 </View>
               </View>
@@ -2559,6 +2659,13 @@ const lightStyles = StyleSheet.create({
     top: -90,
     right: -120,
   },
+  bgOrbLargeCompact: {
+    width: 250,
+    height: 250,
+    top: -78,
+    right: -95,
+    opacity: 0.7,
+  },
   bgOrbMedium: {
     position: "absolute",
     width: 280,
@@ -2568,10 +2675,22 @@ const lightStyles = StyleSheet.create({
     bottom: 60,
     left: -130,
   },
+  bgOrbMediumCompact: {
+    width: 180,
+    height: 180,
+    bottom: 94,
+    left: -74,
+    opacity: 0.6,
+  },
 
   topSafeArea: {
     backgroundColor: "transparent",
-    paddingTop: Platform.OS === "android" ? StatusBar.currentHeight || 8 : 0,
+    paddingTop:
+      Platform.OS === "android"
+        ? StatusBar.currentHeight || 8
+        : IS_WEB
+        ? 8
+        : 0,
     paddingHorizontal: 14,
     paddingBottom: 2,
     zIndex: 20,
@@ -2640,23 +2759,6 @@ const lightStyles = StyleSheet.create({
     letterSpacing: 0.4,
   },
   headerLeft: { flexDirection: "row", alignItems: "center", flex: 1, paddingRight: 8 },
-  brandMark: {
-    width: 36,
-    height: 36,
-    borderRadius: 12,
-    overflow: "hidden",
-    marginRight: 8,
-    backgroundColor: "#f6f8ff",
-    borderWidth: 1,
-    borderColor: "#d3dcef",
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  brandMarkImage: {
-    width: 30,
-    height: 30,
-    resizeMode: "contain",
-  },
   headerRight: { flexDirection: "row", alignItems: "center" },
   headerIconBtn: {
     minHeight: 36,
@@ -2820,7 +2922,8 @@ const lightStyles = StyleSheet.create({
     paddingHorizontal: 12,
     backgroundColor: "#ffffff",
     color: "#0f172a",
-    fontSize: 14,
+    fontSize: IS_WEB ? 16 : 14,
+    ...(IS_WEB ? { outlineStyle: "none", outlineWidth: 0 } : {}),
   },
   textArea: { minHeight: 100, textAlignVertical: "top", paddingTop: 10 },
   imagePickerBox: {
@@ -3030,7 +3133,14 @@ const lightStyles = StyleSheet.create({
     paddingHorizontal: 10,
     paddingVertical: 6,
   },
-  teamChatInput: { flex: 1, minHeight: 36, color: "#0f172a", fontSize: 14, paddingRight: 8 },
+  teamChatInput: {
+    flex: 1,
+    minHeight: 36,
+    color: "#0f172a",
+    fontSize: IS_WEB ? 16 : 14,
+    paddingRight: 8,
+    ...(IS_WEB ? { outlineStyle: "none", outlineWidth: 0 } : {}),
+  },
   teamChatSendBtn: {
     width: 34,
     height: 34,
@@ -3124,6 +3234,7 @@ const lightStyles = StyleSheet.create({
   btn_secondary: { backgroundColor: "#eef3ff", borderColor: "#d3dcef" },
   btn_danger: { backgroundColor: "#fff1f2", borderColor: "#fda4af" },
   btn_ghost: { backgroundColor: "#eef3ff", borderColor: "#d3dcef" },
+  btnDisabled: { opacity: 0.55 },
   btnText: { fontSize: 11, fontWeight: "800", fontFamily: FONT_ACCENT },
   btnTextPrimary: { color: "#fff" },
   btnTextSecondary: { color: "#0f172a" },
@@ -3332,10 +3443,31 @@ const lightStyles = StyleSheet.create({
   aiFabActive: { backgroundColor: "#0a84ff" },
   aiFabText: { color: "#fff", fontSize: 11, fontWeight: "900", letterSpacing: 0.4 },
 
-  authOverlay: { flex: 1, backgroundColor: "rgba(15,23,42,0.28)", justifyContent: "center", padding: 14 },
-  authCard: { backgroundColor: "rgba(255,255,255,0.95)", borderRadius: 28, padding: 16, maxHeight: "92%", borderWidth: 1, borderColor: "#d9e4fa" },
+  authOverlay: { flex: 1, backgroundColor: "rgba(15,23,42,0.28)", justifyContent: "center", padding: IS_WEB ? 10 : 14 },
+  authCard: {
+    width: "100%",
+    maxWidth: 560,
+    alignSelf: "center",
+    backgroundColor: "rgba(255,255,255,0.95)",
+    borderRadius: 28,
+    padding: 16,
+    maxHeight: "92%",
+    borderWidth: 1,
+    borderColor: "#d9e4fa",
+  },
   modalOverlay: { flex: 1, backgroundColor: "rgba(15,23,42,0.24)", justifyContent: "flex-end" },
-  modalCard: { backgroundColor: "rgba(255,255,255,0.96)", borderTopLeftRadius: 30, borderTopRightRadius: 30, padding: 14, maxHeight: "92%", borderTopWidth: 1, borderColor: "#d9e4fa" },
+  modalCard: {
+    width: "100%",
+    maxWidth: 760,
+    alignSelf: "center",
+    backgroundColor: "rgba(255,255,255,0.96)",
+    borderTopLeftRadius: 30,
+    borderTopRightRadius: 30,
+    padding: 14,
+    maxHeight: "92%",
+    borderTopWidth: 1,
+    borderColor: "#d9e4fa",
+  },
   aiOverlay: { flex: 1, backgroundColor: "rgba(15,23,42,0.3)", justifyContent: "flex-end", alignItems: "flex-end", padding: 12 },
   aiCard: { width: "100%", maxWidth: 430, backgroundColor: "rgba(255,255,255,0.97)", borderRadius: 26, padding: 12, maxHeight: "80%", borderWidth: 1, borderColor: "#d9e4fa" },
   aiHeader: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", marginBottom: 10 },
@@ -3351,7 +3483,15 @@ const lightStyles = StyleSheet.create({
   chatAi: { alignSelf: "flex-start", backgroundColor: "#ffffff", borderWidth: 1, borderColor: "#dde7fb" },
   aiTypingWrap: { alignItems: "center", justifyContent: "center", minWidth: 64 },
   aiInputRow: { flexDirection: "row", alignItems: "center", marginTop: 10, backgroundColor: "#fbfdff", borderRadius: 20, borderWidth: 1, borderColor: "#dde7fb", paddingLeft: 12, paddingRight: 6, paddingVertical: 6 },
-  aiInput: { flex: 1, minHeight: 36, color: "#0f172a", fontSize: 14, paddingVertical: 6, paddingRight: 8 },
+  aiInput: {
+    flex: 1,
+    minHeight: 36,
+    color: "#0f172a",
+    fontSize: IS_WEB ? 16 : 14,
+    paddingVertical: 6,
+    paddingRight: 8,
+    ...(IS_WEB ? { outlineStyle: "none", outlineWidth: 0 } : {}),
+  },
   aiSendBtn: { width: 36, height: 36, borderRadius: 14, backgroundColor: "#0a84ff", alignItems: "center", justifyContent: "center" },
   aiSendBtnDisabled: { backgroundColor: "#9cabcb" },
   chatText: { fontSize: 13, color: "#0f172a", fontFamily: FONT_BODY },

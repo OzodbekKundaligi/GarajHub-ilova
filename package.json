@@ -4,12 +4,14 @@
   "private": true,
   "main": "index.js",
   "scripts": {
+    "postinstall": "npm --prefix ./server install --no-fund --no-audit",
     "start": "expo start --clear",
     "android": "expo start --android",
     "ios": "expo start --ios",
     "web": "expo start --web",
     "build:web": "expo export --platform web",
-    "start:web": "npx serve dist -l $PORT",
+    "start:web": "npm run start:railway",
+    "start:railway": "npm run build:web && npm --prefix ./server run start",
     "server": "npm --prefix ./server run dev",
     "server:start": "npm --prefix ./server run start"
   },

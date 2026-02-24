@@ -1,7 +1,8 @@
 node_modules
 .expo
-dist
 build
+dist
 .env
 .env.*
 src/.env
+server/.env

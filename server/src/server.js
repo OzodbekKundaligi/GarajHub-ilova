@@ -12,10 +12,35 @@ const rootDir = path.resolve(__dirname, "..", "..");
 const webDistPath = path.resolve(rootDir, "dist");
 
 const port = Number.parseInt(process.env.PORT || "4100", 10);
-const mongoUri = process.env.MONGODB_URI || "mongodb://127.0.0.1:27017/garajhub_mobile";
 const corsOrigin = process.env.CORS_ORIGIN || "*";
 
+function resolveMongoUri() {
+  const isRailway =
+    Boolean(process.env.RAILWAY_ENVIRONMENT) ||
+    Boolean(process.env.RAILWAY_PROJECT_ID) ||
+    Boolean(process.env.RAILWAY_SERVICE_ID);
+
+  const fromEnv =
+    process.env.MONGODB_URI ||
+    process.env.MONGO_URL ||
+    process.env.MONGO_URI ||
+    process.env.DATABASE_URL ||
+    "";
+
+  const normalized = String(fromEnv).trim();
+  if (normalized) return normalized;
+
+  if (!isRailway) {
+    return "mongodb://mongo:KRetcTesekiXBhxgKiyeCtDvsLNvxeBC@maglev.proxy.rlwy.net:36907";
+  }
+
+  throw new Error(
+    "MongoDB URI topilmadi. Railway Variables ga MONGODB_URI (yoki MONGO_URL) qo'shing."
+  );
+}
+
 async function start() {
+  const mongoUri = resolveMongoUri();
   await connectDb(mongoUri);
   const app = createApp({ corsOrigin, webDistPath });
   app.listen(port, () => {

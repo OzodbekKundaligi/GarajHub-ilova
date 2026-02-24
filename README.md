@@ -13,7 +13,7 @@
 
 `web` va `api` bitta serverda ishlaydi:
 
-1. Railway'da `MONGODB_URI` env ni qo'ying.
+1. Railway'da Mongo URI env qo'ying: `MONGODB_URI` (yoki `MONGO_URL`).
 2. Start command: `npm run start:railway`
 3. `Procfile` ham shu scriptga yo'naltirilgan.
 

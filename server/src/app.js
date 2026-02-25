@@ -109,7 +109,7 @@ function toGroqMessages(history, promptText) {
 }
 
 async function callGroqMentor({ history, prompt }) {
-  const apiKey = String(process.env.GROQ_API_KEY || "").trim();
+  const apiKey = String(process.env.GROQ_API_KEY || "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").trim();
   if (!apiKey) {
     return {
       text: `${offlineMentorFallback(prompt)}\n\nServerda GROQ_API_KEY yo'q, fallback javob qaytarildi.`,

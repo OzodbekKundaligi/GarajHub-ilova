@@ -23,6 +23,10 @@ Muhim:
 - Railway portni o'zi beradi (`PORT`, ko'pincha `8080`) va bu to'g'ri.
 - Local developda server default `4100` portda ishlaydi.
 - `4100` ni Railway'da majburlash shart emas; app `process.env.PORT` ni oladi.
+- Xavfsizlik uchun write token yoqmoqchi bo'lsangiz:
+  - server env: `APP_WRITE_TOKEN=your_secret_token`
+  - frontend env: `EXPO_PUBLIC_API_WRITE_TOKEN=your_secret_token`
+  - token yoqilganida `/api/state` va `/api/state/reset` token talab qiladi.
 
 ## MongoDB ulanishi
 
@@ -51,10 +55,14 @@ EXPO_PUBLIC_API_BASE_URL=http://YOUR_IP:4100/api npm start
 
 ## AI Mentor (ixtiyoriy)
 
-To'liq AI javoblar uchun loyiha ildizida `.env` yarating:
+AI endi server orqali ishlaydi (Groq key frontendga chiqmaydi).
+
+To'liq AI javoblar uchun server env qo'ying:
 
 ```env
-EXPO_PUBLIC_GROQ_API_KEY=your_groq_api_key
+GROQ_API_KEY=your_groq_api_key
+GROQ_MODEL=llama-3.1-8b-instant
+GROQ_TIMEOUT_MS=20000
 ```
 
 Kalit bo'lmasa ham ilova ichida offline qisqa tavsiyalar ishlaydi.

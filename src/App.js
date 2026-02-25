@@ -191,6 +191,312 @@ function getStartupProgress(startup) {
   return { total, done, inProgress, todo, overdue, completion };
 }
 
+function clampMetric(value, min, max) {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) return min;
+  return Math.min(max, Math.max(min, numeric));
+}
+
+function getStartupWorkspace(startup) {
+  if (!startup) return null;
+  return startup.workspace || null;
+}
+
+function getWorkspaceLifecycleLabel(lifecycle) {
+  if (lifecycle === "closed") return "Yopilgan";
+  if (lifecycle === "paused") return "To'xtatilgan";
+  return "Faol";
+}
+
+function getEquitySignal(workspace, membersCount = 0) {
+  const entries = workspace?.equity_entries || [];
+  if (entries.length === 0) {
+    return {
+      variant: "default",
+      text: "Equity kiritilmagan",
+      total: 0,
+      topShare: 0,
+      isBalanced: false,
+    };
+  }
+  const total = entries.reduce((sum, item) => sum + Number(item.percent || 0), 0);
+  const topShare = Math.max(...entries.map((item) => Number(item.percent || 0)));
+  const withinRange = total >= 95 && total <= 105;
+  const tooCentralized = topShare > 45;
+  const lowCoverage = membersCount > 0 && entries.length < Math.max(1, Math.floor(membersCount / 2));
+  const risky = !withinRange || tooCentralized || lowCoverage;
+  return {
+    variant: risky ? "danger" : "success",
+    text: risky ? "Riskli taqsimot" : "Balansli taqsimot",
+    total: Math.round(total * 100) / 100,
+    topShare: Math.round(topShare * 100) / 100,
+    isBalanced: !risky,
+  };
+}
+
+function getUserReputationSummary(user, startups) {
+  if (!user) {
+    return {
+      score: 0,
+      tier: "D",
+      projects: 0,
+      collaborators: 0,
+      daysWorked: 0,
+      assignedTasks: 0,
+      doneTasks: 0,
+      missedTasks: 0,
+      avgRating: 0,
+      ratingsCount: 0,
+      closedSuccess: 0,
+      closedFailed: 0,
+      history: [],
+    };
+  }
+
+  const collaboratorSet = new Set();
+  const history = [];
+  let daysWorked = 0;
+  let assignedTasks = 0;
+  let doneTasks = 0;
+  let missedTasks = 0;
+  let ratingsCount = 0;
+  let ratingsTotal = 0;
+  let closedSuccess = 0;
+  let closedFailed = 0;
+
+  (startups || []).forEach((startup) => {
+    if (!startup) return;
+    const members = startup.a_zolar || [];
+    const isMember = startup.egasi_id === user.id || members.some((member) => member.user_id === user.id);
+    if (!isMember) return;
+
+    members.forEach((member) => {
+      if (member.user_id && member.user_id !== user.id) collaboratorSet.add(member.user_id);
+    });
+    if (startup.egasi_id && startup.egasi_id !== user.id) collaboratorSet.add(startup.egasi_id);
+
+    const memberRow = members.find((member) => member.user_id === user.id);
+    const startedAt = memberRow?.joined_at || startup.yaratilgan_vaqt || startup.created_at || new Date().toISOString();
+    const workspace = getStartupWorkspace(startup);
+    const endedAt =
+      workspace?.lifecycle === "closed" ? workspace?.closed_at || new Date().toISOString() : new Date().toISOString();
+    const diff = Math.round(
+      (new Date(endedAt).getTime() - new Date(startedAt).getTime()) / (1000 * 60 * 60 * 24)
+    );
+    if (Number.isFinite(diff)) daysWorked += Math.max(1, diff);
+
+    const myTasks = (startup.tasks || []).filter((task) => task.assigned_to_id === user.id);
+    assignedTasks += myTasks.length;
+    doneTasks += myTasks.filter((task) => task.status === "done").length;
+    missedTasks += myTasks.filter((task) => {
+      if (!task.deadline || task.status === "done") return false;
+      const dueTs = new Date(`${task.deadline}T23:59:59`).getTime();
+      return Number.isFinite(dueTs) && dueTs < Date.now();
+    }).length;
+
+    const myReviews = (startup.member_reviews || []).filter((review) => review.target_user_id === user.id);
+    myReviews.forEach((review) => {
+      ratingsTotal += Number(review.rating || 0);
+      ratingsCount += 1;
+    });
+
+    const progress = getStartupProgress(startup);
+    if (workspace?.lifecycle === "closed") {
+      if (progress.completion >= 60) closedSuccess += 1;
+      else closedFailed += 1;
+    }
+
+    history.push({
+      startup_id: startup.id,
+      startup_name: startup.nomi,
+      lifecycle: workspace?.lifecycle || "active",
+      joined_at: startedAt,
+      completion: progress.completion,
+      tasks_done: myTasks.filter((task) => task.status === "done").length,
+      tasks_total: myTasks.length,
+    });
+  });
+
+  const avgRating = ratingsCount > 0 ? ratingsTotal / ratingsCount : 0;
+  let score = 20;
+  score += Math.min(doneTasks * 2, 30);
+  score -= Math.min(missedTasks * 2, 22);
+  score += avgRating > 0 ? avgRating * 8 : 0;
+  score += Math.min(collaboratorSet.size * 2, 16);
+  score += Math.min(Math.round(daysWorked / 14), 16);
+  score += closedSuccess * 6;
+  score -= closedFailed * 4;
+  score = Math.round(clampMetric(score, 0, 100));
+
+  return {
+    score,
+    tier: score >= 80 ? "A" : score >= 65 ? "B" : score >= 50 ? "C" : "D",
+    projects: history.length,
+    collaborators: collaboratorSet.size,
+    daysWorked,
+    assignedTasks,
+    doneTasks,
+    missedTasks,
+    avgRating: Number(avgRating.toFixed(2)),
+    ratingsCount,
+    closedSuccess,
+    closedFailed,
+    history: history.sort((a, b) => new Date(b.joined_at).getTime() - new Date(a.joined_at).getTime()),
+  };
+}
+
+function buildStartupCollaborationGraph(startup) {
+  if (!startup) return { nodes: [], edges: [] };
+  const members = startup.a_zolar || [];
+  if (members.length === 0) return { nodes: [], edges: [] };
+  const reviews = startup.member_reviews || [];
+
+  const nodes = members.map((member) => {
+    const memberReviews = reviews.filter((review) => review.target_user_id === member.user_id);
+    const avgRating =
+      memberReviews.length > 0
+        ? memberReviews.reduce((sum, review) => sum + Number(review.rating || 0), 0) / memberReviews.length
+        : 0;
+    return {
+      user_id: member.user_id,
+      name: member.name,
+      role: member.role,
+      joined_at: member.joined_at,
+      avg_rating: Number(avgRating.toFixed(2)),
+      ratings_count: memberReviews.length,
+    };
+  });
+
+  const edges = [];
+  for (let i = 0; i < members.length; i += 1) {
+    for (let j = i + 1; j < members.length; j += 1) {
+      const left = members[i];
+      const right = members[j];
+      const linkReviews = reviews.filter(
+        (review) =>
+          (review.reviewer_id === left.user_id && review.target_user_id === right.user_id) ||
+          (review.reviewer_id === right.user_id && review.target_user_id === left.user_id)
+      );
+      const avgLinkRating =
+        linkReviews.length > 0
+          ? linkReviews.reduce((sum, review) => sum + Number(review.rating || 0), 0) / linkReviews.length
+          : 0;
+      const leftJoined = new Date(left.joined_at || startup.yaratilgan_vaqt || startup.created_at || Date.now()).getTime();
+      const rightJoined = new Date(right.joined_at || startup.yaratilgan_vaqt || startup.created_at || Date.now()).getTime();
+      const sharedDays = Math.max(
+        1,
+        Math.round((Date.now() - Math.max(leftJoined, rightJoined)) / (1000 * 60 * 60 * 24))
+      );
+      const linkStrength = Math.round(
+        clampMetric(sharedDays / 7 + avgLinkRating * 8, 0, 100)
+      );
+      edges.push({
+        id: `edge_${left.user_id}_${right.user_id}`,
+        from: left.user_id,
+        to: right.user_id,
+        shared_days: sharedDays,
+        avg_rating: Number(avgLinkRating.toFixed(2)),
+        strength: linkStrength,
+      });
+    }
+  }
+
+  return {
+    nodes,
+    edges: edges.sort((a, b) => b.strength - a.strength),
+  };
+}
+
+function buildStartupAiInsight(startup) {
+  if (!startup) {
+    return {
+      riskScore: 0,
+      riskLevel: "low",
+      founderCompatibility: 0,
+      warnings: [],
+      recommendations: [],
+      overdueRatio: 0,
+      pendingDecisions: 0,
+      pendingFounderVotes: 0,
+      inactiveDays: 0,
+      equitySignal: getEquitySignal(null, 0),
+    };
+  }
+
+  const progress = getStartupProgress(startup);
+  const workspace = getStartupWorkspace(startup) || {};
+  const members = startup.a_zolar || [];
+  const equitySignal = getEquitySignal(workspace, members.length);
+  const openDecisions = (workspace.decisions || []).filter((decision) => decision.status === "open");
+  const openFounderVotes = (workspace.founder_votes || []).filter((vote) => vote.status === "open");
+  const lastChatAt = (startup.chat_messages || []).length
+    ? new Date((startup.chat_messages || []).slice(-1)[0].created_at).getTime()
+    : new Date(startup.yaratilgan_vaqt || startup.created_at || Date.now()).getTime();
+  const inactiveDays = Math.max(0, Math.round((Date.now() - lastChatAt) / (1000 * 60 * 60 * 24)));
+  const overdueRatio = progress.total > 0 ? progress.overdue / progress.total : 0;
+  const safekeepingAccepted = workspace?.safekeeping_agreement?.accepted_user_ids?.length || 0;
+  const safekeepingCoverage = members.length > 0 ? safekeepingAccepted / members.length : 1;
+
+  const founderMembers = members.filter(
+    (member) =>
+      member.user_id === startup.egasi_id ||
+      String(member.role || "").toLowerCase().includes("asoschi") ||
+      String(member.role || "").toLowerCase().includes("founder")
+  );
+  const founderIds = new Set(founderMembers.map((member) => member.user_id));
+  founderIds.add(startup.egasi_id);
+  const founderReviews = (startup.member_reviews || []).filter(
+    (review) => founderIds.has(review.reviewer_id) && founderIds.has(review.target_user_id)
+  );
+  const founderCompatibilityRaw =
+    founderReviews.length > 0
+      ? founderReviews.reduce((sum, review) => sum + Number(review.rating || 0), 0) / founderReviews.length
+      : 3;
+  const founderCompatibility = Math.round(clampMetric(founderCompatibilityRaw * 20, 20, 100));
+
+  let riskScore = 15;
+  if (overdueRatio >= 0.4) riskScore += 24;
+  else if (overdueRatio >= 0.2) riskScore += 12;
+  if (progress.completion < 25 && progress.total > 3) riskScore += 15;
+  if (inactiveDays > 7) riskScore += 14;
+  if (inactiveDays > 14) riskScore += 12;
+  if (openDecisions.length >= 3) riskScore += 10;
+  if (openFounderVotes.length > 0) riskScore += 10;
+  if (!equitySignal.isBalanced) riskScore += 12;
+  if (safekeepingCoverage < 0.75) riskScore += 8;
+  if (founderCompatibility < 55) riskScore += 12;
+  riskScore = Math.round(clampMetric(riskScore, 0, 100));
+
+  const warnings = [];
+  if (overdueRatio > 0.2) warnings.push({ code: "overdue", text: "Tasklarda kechikish yuqori", variant: "danger" });
+  if (inactiveDays > 7) warnings.push({ code: "inactive", text: `Chat faolligi past (${inactiveDays} kun)`, variant: "danger" });
+  if (!equitySignal.isBalanced) warnings.push({ code: "equity", text: "Equity adolatsiz yoki noto'liq", variant: "danger" });
+  if (openFounderVotes.length > 0) warnings.push({ code: "founder_vote", text: "Founder vote hali ochiq", variant: "default" });
+  if (safekeepingCoverage < 0.75) warnings.push({ code: "agreement", text: "Safekeeping hamma tomonidan qabul qilinmagan", variant: "default" });
+  if (warnings.length === 0) warnings.push({ code: "ok", text: "Jiddiy risk signal topilmadi", variant: "success" });
+
+  const recommendations = [];
+  if (overdueRatio > 0.2) recommendations.push("Haftalik sprint review va owner-assignee qayta taqsimlashni yoqing.");
+  if (!equitySignal.isBalanced) recommendations.push("Equity jadvalini qayta balanslang (jami 100% va top-share <=45%).");
+  if (founderCompatibility < 60) recommendations.push("Founderlar o'rtasida qaror protokoli va haftalik alignment meeting kiriting.");
+  if (inactiveDays > 7) recommendations.push("Jamoa chatda daily update formatini majburiy qiling.");
+  if (openDecisions.length >= 3) recommendations.push("Ochiq qarorlarni yopish uchun deadline va owner belgilang.");
+  if (recommendations.length === 0) recommendations.push("Hozirgi ritm yaxshi. Investor intro va delivery tezligini oshirishga fokus qiling.");
+
+  return {
+    riskScore,
+    riskLevel: riskScore >= 70 ? "high" : riskScore >= 40 ? "medium" : "low",
+    founderCompatibility,
+    warnings,
+    recommendations,
+    overdueRatio: Number((overdueRatio * 100).toFixed(1)),
+    pendingDecisions: openDecisions.length,
+    pendingFounderVotes: openFounderVotes.length,
+    inactiveDays,
+    equitySignal,
+  };
+}
+
 function confirmAction(title, message, onConfirm) {
   if (Platform.OS === "web") {
     const canConfirm = typeof globalThis.confirm === "function";
@@ -329,6 +635,26 @@ export default function App() {
   const [proReceipt, setProReceipt] = useState("");
   const [proNote, setProNote] = useState("");
   const [moderationBusyId, setModerationBusyId] = useState("");
+  const [workspaceDraft, setWorkspaceDraft] = useState({
+    agreementText: "",
+    equityMemberId: "",
+    equityPercent: "",
+    equityRole: "",
+    equityVestingMonths: "12",
+    decisionTitle: "",
+    decisionDescription: "",
+    decisionDeadline: "",
+    founderVoteTargetId: "",
+    founderVoteReason: "",
+    investorName: "",
+    investorContact: "",
+    investorStage: "intro",
+    investorNote: "",
+    successFeePercent: "2",
+    reviewTargetId: "",
+    reviewRating: "5",
+    reviewComment: "",
+  });
 
   const [createForm, setCreateForm] = useState({
     nomi: "",
@@ -423,6 +749,26 @@ export default function App() {
       setCreateForm((prev) => ({ ...prev, category: categories[0] || "Other" }));
     }
   }, [categories, selectedCategory, createForm.category]);
+
+  useEffect(() => {
+    const startupForDraft = startups.find((item) => item.id === selectedStartupId);
+    if (!startupForDraft) return;
+    const workspace = getStartupWorkspace(startupForDraft);
+    const members = startupForDraft.a_zolar || [];
+    const defaultTargetMember = members.find((member) => member.user_id !== currentUser?.id);
+    setWorkspaceDraft((prev) => ({
+      ...prev,
+      agreementText:
+        workspace?.safekeeping_agreement?.text ||
+        prev.agreementText ||
+        "GarajHub safekeeping agreement",
+      equityMemberId: members[0]?.user_id || prev.equityMemberId || "",
+      equityRole: prev.equityRole || "Contributor",
+      successFeePercent: String(workspace?.success_fee_percent || 2),
+      founderVoteTargetId: defaultTargetMember?.user_id || "",
+      reviewTargetId: defaultTargetMember?.user_id || "",
+    }));
+  }, [selectedStartupId, startups, currentUser?.id]);
 
   async function pickImageAndSet(setter) {
     try {
@@ -822,12 +1168,30 @@ export default function App() {
         return;
       }
 
+      const specialistsList = createForm.specialists
+        .split(",")
+        .map((x) => x.trim())
+        .filter(Boolean);
+      const specialistWords = specialistsList.join(" ").toLowerCase();
+      const isItFocused =
+        specialistWords.includes("developer") ||
+        specialistWords.includes("frontend") ||
+        specialistWords.includes("backend") ||
+        specialistWords.includes("fullstack") ||
+        specialistWords.includes("engineer");
+      if (!isItFocused) {
+        return Alert.alert(
+          "Segment qoidasi",
+          "Hozircha faqat IT founder + developer segmenti ochiq. Mutaxassislar maydoniga kamida bir developer roli kiriting."
+        );
+      }
+
       const s = {
         id: `s_${Date.now()}`,
         nomi: createForm.nomi.trim(),
         tavsif: createForm.tavsif.trim(),
         category: String(createForm.category || "").trim() || categories[0] || "Other",
-        kerakli_mutaxassislar: createForm.specialists.split(",").map((x) => x.trim()).filter(Boolean),
+        kerakli_mutaxassislar: specialistsList,
         logo: createForm.logo.trim() || "https://via.placeholder.com/150/111/fff?text=Startup",
         egasi_id: currentUser.id,
         egasi_name: currentUser.name,
@@ -888,9 +1252,14 @@ export default function App() {
       const s = startups.find((x) => x.id === r.startup_id);
       if (s && !(s.a_zolar || []).some((m) => m.user_id === r.user_id)) {
         const updated = [...(s.a_zolar || []), { user_id: r.user_id, name: r.user_name, role: r.specialty, joined_at: new Date().toISOString() }];
-        await dbOperations.updateStartup(s.id, { a_zolar: updated });
-        setStartups((prev) => prev.map((x) => (x.id === s.id ? { ...x, a_zolar: updated } : x)));
-        await addNotification(r.user_id, "Qabul qilindingiz", `${r.startup_name} jamoasiga qabul qilindingiz.`, "success");
+        const persistedStartup = await dbOperations.updateStartup(s.id, { a_zolar: updated });
+        setStartups((prev) => prev.map((x) => (x.id === s.id ? persistedStartup : x)));
+        await addNotification(
+          r.user_id,
+          "Qabul qilindingiz",
+          `${r.startup_name} jamoasiga qabul qilindingiz. Workspace avtomatik ochildi.`,
+          "success"
+        );
       }
     } else {
       await addNotification(
@@ -1271,6 +1640,252 @@ export default function App() {
     setStartups(await dbOperations.getStartups());
   }
 
+  async function refreshStartupsState() {
+    const refreshed = await dbOperations.getStartups();
+    setStartups(refreshed);
+    return refreshed;
+  }
+
+  async function withStartupUpdate(workFn) {
+    try {
+      const updatedStartup = await workFn();
+      if (updatedStartup?.id) {
+        setStartups((prev) => prev.map((startup) => (startup.id === updatedStartup.id ? updatedStartup : startup)));
+      } else {
+        await refreshStartupsState();
+      }
+      return true;
+    } catch (error) {
+      Alert.alert("Xatolik", error?.message || "Workspace amaliyotida xatolik bo'ldi.");
+      return false;
+    }
+  }
+
+  async function acceptSafekeepingAgreement(startupId) {
+    if (!currentUser) return setShowAuthModal(true);
+    await withStartupUpdate(() =>
+      dbOperations.acceptSafekeepingAgreement(startupId, currentUser.id, currentUser.id)
+    );
+  }
+
+  async function saveSafekeepingAgreement(startupId) {
+    if (!currentUser) return setShowAuthModal(true);
+    const text = String(workspaceDraft.agreementText || "").trim();
+    if (!text) {
+      Alert.alert("Xatolik", "Safekeeping matnini kiriting.");
+      return;
+    }
+    await withStartupUpdate(() =>
+      dbOperations.setSafekeepingAgreement(startupId, text, currentUser.id)
+    );
+  }
+
+  async function saveSuccessFee(startupId) {
+    if (!currentUser) return setShowAuthModal(true);
+    const fee = clampMetric(Number(workspaceDraft.successFeePercent || 2), 1, 3);
+    await withStartupUpdate(() =>
+      dbOperations.setWorkspaceSuccessFee(startupId, fee, currentUser.id)
+    );
+    setWorkspaceDraft((prev) => ({ ...prev, successFeePercent: String(fee) }));
+  }
+
+  async function saveWorkspaceLifecycle(startupId, lifecycle) {
+    if (!currentUser) return setShowAuthModal(true);
+    await withStartupUpdate(() =>
+      dbOperations.setWorkspaceLifecycle(startupId, lifecycle, currentUser.id)
+    );
+  }
+
+  async function saveEquityEntry(startupId) {
+    if (!currentUser) return setShowAuthModal(true);
+    const userId = String(workspaceDraft.equityMemberId || "").trim();
+    if (!userId) return Alert.alert("Xatolik", "A'zoni tanlang.");
+    const percent = Number(workspaceDraft.equityPercent || 0);
+    if (!Number.isFinite(percent) || percent <= 0) {
+      return Alert.alert("Xatolik", "Equity foizi noto'g'ri.");
+    }
+    const memberName =
+      (selectedStartup?.a_zolar || []).find((member) => member.user_id === userId)?.name || "Unknown";
+
+    const ok = await withStartupUpdate(() =>
+      dbOperations.upsertEquityEntry(
+        startupId,
+        {
+          user_id: userId,
+          user_name: memberName,
+          percent,
+          role: String(workspaceDraft.equityRole || "Contributor"),
+          vesting_months: Number(workspaceDraft.equityVestingMonths || 12),
+        },
+        currentUser.id
+      )
+    );
+    if (ok) {
+      setWorkspaceDraft((prev) => ({ ...prev, equityPercent: "", equityRole: prev.equityRole || "Contributor" }));
+    }
+  }
+
+  async function removeEquityEntry(startupId, userId) {
+    if (!currentUser) return setShowAuthModal(true);
+    await withStartupUpdate(() => dbOperations.removeEquityEntry(startupId, userId, currentUser.id));
+  }
+
+  async function createWorkspaceDecision(startupId) {
+    if (!currentUser) return setShowAuthModal(true);
+    const title = String(workspaceDraft.decisionTitle || "").trim();
+    if (!title) return Alert.alert("Xatolik", "Qaror nomini kiriting.");
+    const ok = await withStartupUpdate(() =>
+      dbOperations.createWorkspaceDecision(
+        startupId,
+        {
+          title,
+          description: workspaceDraft.decisionDescription,
+          deadline: workspaceDraft.decisionDeadline,
+          type: "governance",
+        },
+        currentUser.id
+      )
+    );
+    if (ok) {
+      setWorkspaceDraft((prev) => ({
+        ...prev,
+        decisionTitle: "",
+        decisionDescription: "",
+        decisionDeadline: "",
+      }));
+    }
+  }
+
+  async function voteWorkspaceDecision(startupId, decisionId, vote) {
+    if (!currentUser) return setShowAuthModal(true);
+    await withStartupUpdate(() =>
+      dbOperations.castWorkspaceDecisionVote(
+        startupId,
+        decisionId,
+        vote,
+        { user_id: currentUser.id, user_name: currentUser.name },
+        currentUser.id
+      )
+    );
+  }
+
+  async function closeWorkspaceDecision(startupId, decisionId) {
+    if (!currentUser) return setShowAuthModal(true);
+    await withStartupUpdate(() =>
+      dbOperations.closeWorkspaceDecision(startupId, decisionId, currentUser.id)
+    );
+  }
+
+  async function createFounderVote(startupId) {
+    if (!currentUser) return setShowAuthModal(true);
+    const targetUserId = String(workspaceDraft.founderVoteTargetId || "").trim();
+    if (!targetUserId) return Alert.alert("Xatolik", "Kim uchun ovoz berilishini tanlang.");
+    const targetMember = (selectedStartup?.a_zolar || []).find((member) => member.user_id === targetUserId);
+    const ok = await withStartupUpdate(() =>
+      dbOperations.createFounderVote(
+        startupId,
+        {
+          target_user_id: targetUserId,
+          target_user_name: targetMember?.name || "Unknown",
+          reason: workspaceDraft.founderVoteReason,
+        },
+        currentUser.id
+      )
+    );
+    if (ok) {
+      setWorkspaceDraft((prev) => ({ ...prev, founderVoteReason: "" }));
+    }
+  }
+
+  async function voteFounderVote(startupId, founderVoteId, vote) {
+    if (!currentUser) return setShowAuthModal(true);
+    await withStartupUpdate(() =>
+      dbOperations.castFounderVote(
+        startupId,
+        founderVoteId,
+        vote,
+        { user_id: currentUser.id, user_name: currentUser.name },
+        currentUser.id
+      )
+    );
+  }
+
+  async function closeFounderVote(startupId, founderVoteId) {
+    if (!currentUser) return setShowAuthModal(true);
+    await withStartupUpdate(() =>
+      dbOperations.closeFounderVote(startupId, founderVoteId, currentUser.id)
+    );
+  }
+
+  async function addInvestorLog(startupId) {
+    if (!currentUser) return setShowAuthModal(true);
+    const investorName = String(workspaceDraft.investorName || "").trim();
+    if (!investorName) return Alert.alert("Xatolik", "Investor nomini kiriting.");
+    const ok = await withStartupUpdate(() =>
+      dbOperations.addInvestorIntroduction(
+        startupId,
+        {
+          investor_name: investorName,
+          contact: workspaceDraft.investorContact,
+          stage: workspaceDraft.investorStage || "intro",
+          note: workspaceDraft.investorNote,
+          outcome: "open",
+          introduced_by_id: currentUser.id,
+          introduced_by_name: currentUser.name,
+        },
+        currentUser.id
+      )
+    );
+    if (ok) {
+      setWorkspaceDraft((prev) => ({
+        ...prev,
+        investorName: "",
+        investorContact: "",
+        investorStage: "intro",
+        investorNote: "",
+      }));
+    }
+  }
+
+  async function setInvestorOutcome(startupId, logId, outcome) {
+    if (!currentUser) return setShowAuthModal(true);
+    await withStartupUpdate(() =>
+      dbOperations.updateInvestorIntroductionOutcome(
+        startupId,
+        logId,
+        outcome,
+        "",
+        currentUser.id
+      )
+    );
+  }
+
+  async function submitMemberReview(startupId) {
+    if (!currentUser) return setShowAuthModal(true);
+    const targetUserId = String(workspaceDraft.reviewTargetId || "").trim();
+    if (!targetUserId) return Alert.alert("Xatolik", "Kimga baho berishni tanlang.");
+    if (targetUserId === currentUser.id) return Alert.alert("Xatolik", "O'zingizga baho berolmaysiz.");
+    const rating = clampMetric(Number(workspaceDraft.reviewRating || 5), 1, 5);
+    const targetMember = (selectedStartup?.a_zolar || []).find((member) => member.user_id === targetUserId);
+    const ok = await withStartupUpdate(() =>
+      dbOperations.createMemberReview(
+        startupId,
+        {
+          target_user_id: targetUserId,
+          target_user_name: targetMember?.name || "Unknown",
+          reviewer_id: currentUser.id,
+          reviewer_name: currentUser.name,
+          rating,
+          comment: workspaceDraft.reviewComment,
+        },
+        currentUser.id
+      )
+    );
+    if (ok) {
+      setWorkspaceDraft((prev) => ({ ...prev, reviewComment: "", reviewRating: "5" }));
+    }
+  }
+
   async function markAllRead() {
     if (!currentUser) return;
     await dbOperations.markAllNotificationsAsRead(currentUser.id);
@@ -1354,6 +1969,46 @@ export default function App() {
       .sort((a, b) => b.score - a.score)
       .slice(0, 5);
   }, [selectedStartup, allUsers]);
+  const selectedWorkspace = useMemo(
+    () => (selectedStartup ? getStartupWorkspace(selectedStartup) : null),
+    [selectedStartup]
+  );
+  const selectedEquitySignal = useMemo(
+    () => getEquitySignal(selectedWorkspace, (selectedStartup?.a_zolar || []).length),
+    [selectedWorkspace, selectedStartup]
+  );
+  const selectedCollaborationGraph = useMemo(
+    () => buildStartupCollaborationGraph(selectedStartup),
+    [selectedStartup]
+  );
+  const selectedAiInsight = useMemo(
+    () => buildStartupAiInsight(selectedStartup),
+    [selectedStartup]
+  );
+  const reputationByUser = useMemo(() => {
+    const map = {};
+    allUsers.forEach((user) => {
+      map[user.id] = getUserReputationSummary(user, startups);
+    });
+    if (currentUser && !map[currentUser.id]) {
+      map[currentUser.id] = getUserReputationSummary(currentUser, startups);
+    }
+    return map;
+  }, [allUsers, startups, currentUser]);
+  const currentUserReputation = useMemo(
+    () => (currentUser ? reputationByUser[currentUser.id] || getUserReputationSummary(currentUser, startups) : null),
+    [currentUser, reputationByUser, startups]
+  );
+  const selectedMemberReputation = useMemo(() => {
+    if (!selectedStartup) return [];
+    return (selectedStartup.a_zolar || []).map((member) => ({
+      member,
+      reputation: reputationByUser[member.user_id] || getUserReputationSummary(
+        { id: member.user_id, name: member.name },
+        startups
+      ),
+    }));
+  }, [selectedStartup, reputationByUser, startups]);
   const startupProgressList = useMemo(
     () =>
       startups
@@ -1863,7 +2518,7 @@ export default function App() {
                   {!!selectedStartup.website_url && <Btn title="Website" icon="globe-outline" small type="secondary" onPress={() => openExternalLink(selectedStartup.website_url)} />}
                 </Animated.View>
                 <Animated.View style={[styles.detailTabsWrap, detailEnterStyle(2)]}>
-                  {["vazifalar", "jamoa", "chat", "progress", "sozlamalar"].map((t) => (
+                  {["vazifalar", "jamoa", "workspace", "reputation", "ai-engine", "chat", "progress", "sozlamalar"].map((t) => (
                     <TouchableOpacity key={t} onPress={() => setActiveDetailTab(t)} style={[styles.detailTab, activeDetailTab === t && styles.detailTabActive]}>
                       <Text style={[styles.detailTabText, activeDetailTab === t && styles.detailTabTextActive]}>{t}</Text>
                     </TouchableOpacity>
@@ -1933,6 +2588,452 @@ export default function App() {
                           </View>
                           <Badge label={`Score ${item.score}`} variant="active" />
                         </View>
+                      ))}
+                    </View>
+                  </View>
+                )}
+
+                {activeDetailTab === "workspace" && (
+                  <View>
+                    <View style={styles.card}>
+                      <View style={styles.rowBetween}>
+                        <Text style={styles.cardTitle}>Workspace holati</Text>
+                        <Badge label={getWorkspaceLifecycleLabel(selectedWorkspace?.lifecycle)} variant={selectedWorkspace?.lifecycle === "closed" ? "danger" : "success"} />
+                      </View>
+                      <Text style={styles.muted}>Segment: {(selectedWorkspace?.segment_focus || "it_founder_developer").toUpperCase()}</Text>
+                      <Text style={styles.muted}>Lock-in: {selectedWorkspace?.lock_in_enabled ? "Yoqilgan" : "O'chirilgan"}</Text>
+                      <Text style={styles.muted}>Success fee: {selectedWorkspace?.success_fee_percent || 2}%</Text>
+                      {canManageSelectedStartup && (
+                        <View style={styles.rowNoWrap}>
+                          <Btn title="Faol" small type="secondary" onPress={() => saveWorkspaceLifecycle(selectedStartup.id, "active")} />
+                          <Btn title="Pause" small type="secondary" onPress={() => saveWorkspaceLifecycle(selectedStartup.id, "paused")} />
+                          <Btn title="Yopish" small type="danger" onPress={() => saveWorkspaceLifecycle(selectedStartup.id, "closed")} />
+                        </View>
+                      )}
+                    </View>
+
+                    <View style={styles.card}>
+                      <View style={styles.rowBetween}>
+                        <Text style={styles.cardTitle}>Safekeeping agreement</Text>
+                        <Badge
+                          label={`${(selectedWorkspace?.safekeeping_agreement?.accepted_user_ids || []).length}/${(selectedStartup.a_zolar || []).length}`}
+                          variant="active"
+                        />
+                      </View>
+                      <Text style={styles.muted}>
+                        {selectedWorkspace?.safekeeping_agreement?.text || "Agreement matni yo'q"}
+                      </Text>
+                      {canManageSelectedStartup && (
+                        <>
+                          <Field
+                            label="Agreement matni"
+                            value={workspaceDraft.agreementText}
+                            onChangeText={(v) => setWorkspaceDraft((prev) => ({ ...prev, agreementText: v }))}
+                            placeholder="Agreement matni..."
+                            multiline
+                          />
+                          <Btn title="Agreementni saqlash" small onPress={() => saveSafekeepingAgreement(selectedStartup.id)} />
+                        </>
+                      )}
+                      {currentUser && (
+                        <Btn
+                          title="Men qabul qilaman"
+                          small
+                          type="secondary"
+                          onPress={() => acceptSafekeepingAgreement(selectedStartup.id)}
+                        />
+                      )}
+                    </View>
+
+                    <View style={styles.card}>
+                      <View style={styles.rowBetween}>
+                        <Text style={styles.cardTitle}>Equity tracking</Text>
+                        <Badge label={`${selectedEquitySignal.total}%`} variant={selectedEquitySignal.variant} />
+                      </View>
+                      <Text style={styles.muted}>
+                        Signal: {selectedEquitySignal.text} • Top share: {selectedEquitySignal.topShare}%
+                      </Text>
+                      {(selectedWorkspace?.equity_entries || []).length === 0 && (
+                        <Text style={styles.muted}>Hali equity taqsimoti kiritilmagan.</Text>
+                      )}
+                      {(selectedWorkspace?.equity_entries || []).map((entry) => (
+                        <View key={entry.id} style={styles.rowBetween}>
+                          <View style={{ flex: 1 }}>
+                            <Text style={styles.cardTitle}>{entry.user_name}</Text>
+                            <Text style={styles.muted}>
+                              {entry.role} • {entry.percent}% • vesting {entry.vesting_months} oy
+                            </Text>
+                          </View>
+                          {canManageSelectedStartup && (
+                            <Btn title="Delete" small type="danger" onPress={() => removeEquityEntry(selectedStartup.id, entry.user_id)} />
+                          )}
+                        </View>
+                      ))}
+
+                      {canManageSelectedStartup && (
+                        <>
+                          <Text style={styles.label}>A'zo tanlash</Text>
+                          <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.chipsWrap}>
+                            {(selectedStartup.a_zolar || []).map((member) => (
+                              <TouchableOpacity
+                                key={`eq_member_${member.user_id}`}
+                                onPress={() => setWorkspaceDraft((prev) => ({ ...prev, equityMemberId: member.user_id }))}
+                                style={[styles.chip, workspaceDraft.equityMemberId === member.user_id && styles.chipActive]}
+                              >
+                                <Text style={[styles.chipText, workspaceDraft.equityMemberId === member.user_id && styles.chipTextActive]}>
+                                  {member.name}
+                                </Text>
+                              </TouchableOpacity>
+                            ))}
+                          </ScrollView>
+                          <Field
+                            label="Foiz"
+                            value={workspaceDraft.equityPercent}
+                            onChangeText={(v) => setWorkspaceDraft((prev) => ({ ...prev, equityPercent: v }))}
+                            placeholder="10"
+                          />
+                          <Field
+                            label="Roli"
+                            value={workspaceDraft.equityRole}
+                            onChangeText={(v) => setWorkspaceDraft((prev) => ({ ...prev, equityRole: v }))}
+                            placeholder="CTO"
+                          />
+                          <Field
+                            label="Vesting (oy)"
+                            value={workspaceDraft.equityVestingMonths}
+                            onChangeText={(v) => setWorkspaceDraft((prev) => ({ ...prev, equityVestingMonths: v }))}
+                            placeholder="12"
+                          />
+                          <Btn title="Equityni saqlash" small onPress={() => saveEquityEntry(selectedStartup.id)} />
+                        </>
+                      )}
+                    </View>
+
+                    <View style={styles.card}>
+                      <Text style={styles.cardTitle}>Qarorlar (vote engine)</Text>
+                      {(selectedWorkspace?.decisions || []).length === 0 && (
+                        <Text style={styles.muted}>Hali qarorlar yo'q.</Text>
+                      )}
+                      {(selectedWorkspace?.decisions || []).map((decision) => {
+                        const yes = (decision.votes || []).filter((item) => item.vote === "yes").length;
+                        const no = (decision.votes || []).filter((item) => item.vote === "no").length;
+                        const abstain = (decision.votes || []).filter((item) => item.vote === "abstain").length;
+                        return (
+                          <View key={decision.id} style={styles.task}>
+                            <View style={styles.rowBetween}>
+                              <Text style={styles.cardTitle}>{decision.title}</Text>
+                              <Badge
+                                label={decision.status}
+                                variant={decision.status === "accepted" ? "success" : decision.status === "rejected" ? "danger" : "default"}
+                              />
+                            </View>
+                            <Text style={styles.muted}>{decision.description || "-"}</Text>
+                            <Text style={styles.tinyMuted}>Yes {yes} • No {no} • Abstain {abstain}</Text>
+                            {decision.status === "open" && currentUser && (
+                              <View style={styles.rowNoWrap}>
+                                <Btn title="Ha" small type="secondary" onPress={() => voteWorkspaceDecision(selectedStartup.id, decision.id, "yes")} />
+                                <Btn title="Yo'q" small type="secondary" onPress={() => voteWorkspaceDecision(selectedStartup.id, decision.id, "no")} />
+                                <Btn title="Betaraf" small type="secondary" onPress={() => voteWorkspaceDecision(selectedStartup.id, decision.id, "abstain")} />
+                                {canManageSelectedStartup && (
+                                  <Btn title="Yopish" small type="ghost" onPress={() => closeWorkspaceDecision(selectedStartup.id, decision.id)} />
+                                )}
+                              </View>
+                            )}
+                          </View>
+                        );
+                      })}
+                      {canManageSelectedStartup && (
+                        <>
+                          <Field
+                            label="Qaror nomi"
+                            value={workspaceDraft.decisionTitle}
+                            onChangeText={(v) => setWorkspaceDraft((prev) => ({ ...prev, decisionTitle: v }))}
+                            placeholder="Masalan: MVP scope freeze"
+                          />
+                          <Field
+                            label="Izoh"
+                            value={workspaceDraft.decisionDescription}
+                            onChangeText={(v) => setWorkspaceDraft((prev) => ({ ...prev, decisionDescription: v }))}
+                            placeholder="Qaror tafsiloti"
+                            multiline
+                          />
+                          <Field
+                            label="Deadline"
+                            value={workspaceDraft.decisionDeadline}
+                            onChangeText={(v) => setWorkspaceDraft((prev) => ({ ...prev, decisionDeadline: v }))}
+                            placeholder="2026-03-10"
+                          />
+                          <Btn title="Qaror yaratish" small onPress={() => createWorkspaceDecision(selectedStartup.id)} />
+                        </>
+                      )}
+                    </View>
+
+                    <View style={styles.card}>
+                      <Text style={styles.cardTitle}>Founder vote (kim qoladi/kim chiqadi)</Text>
+                      {(selectedWorkspace?.founder_votes || []).length === 0 && (
+                        <Text style={styles.muted}>Founder vote yo'q.</Text>
+                      )}
+                      {(selectedWorkspace?.founder_votes || []).map((voteItem) => {
+                        const keep = (voteItem.votes || []).filter((item) => item.vote === "keep").length;
+                        const remove = (voteItem.votes || []).filter((item) => item.vote === "remove").length;
+                        return (
+                          <View key={voteItem.id} style={styles.task}>
+                            <View style={styles.rowBetween}>
+                              <Text style={styles.cardTitle}>{voteItem.target_user_name}</Text>
+                              <Badge
+                                label={voteItem.status}
+                                variant={voteItem.status === "remove" ? "danger" : voteItem.status === "keep" ? "success" : "default"}
+                              />
+                            </View>
+                            <Text style={styles.muted}>{voteItem.reason || "-"}</Text>
+                            <Text style={styles.tinyMuted}>Keep {keep} • Remove {remove}</Text>
+                            {voteItem.status === "open" && currentUser && (
+                              <View style={styles.rowNoWrap}>
+                                <Btn title="Qolsin" small type="secondary" onPress={() => voteFounderVote(selectedStartup.id, voteItem.id, "keep")} />
+                                <Btn title="Chiqsin" small type="danger" onPress={() => voteFounderVote(selectedStartup.id, voteItem.id, "remove")} />
+                                <Btn title="Betaraf" small type="ghost" onPress={() => voteFounderVote(selectedStartup.id, voteItem.id, "abstain")} />
+                                {canManageSelectedStartup && (
+                                  <Btn title="Yopish" small type="ghost" onPress={() => closeFounderVote(selectedStartup.id, voteItem.id)} />
+                                )}
+                              </View>
+                            )}
+                          </View>
+                        );
+                      })}
+                      {canManageSelectedStartup && (
+                        <>
+                          <Text style={styles.label}>Target a'zo</Text>
+                          <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.chipsWrap}>
+                            {(selectedStartup.a_zolar || [])
+                              .filter((member) => member.user_id !== selectedStartup.egasi_id)
+                              .map((member) => (
+                                <TouchableOpacity
+                                  key={`vote_member_${member.user_id}`}
+                                  onPress={() => setWorkspaceDraft((prev) => ({ ...prev, founderVoteTargetId: member.user_id }))}
+                                  style={[styles.chip, workspaceDraft.founderVoteTargetId === member.user_id && styles.chipActive]}
+                                >
+                                  <Text style={[styles.chipText, workspaceDraft.founderVoteTargetId === member.user_id && styles.chipTextActive]}>
+                                    {member.name}
+                                  </Text>
+                                </TouchableOpacity>
+                              ))}
+                          </ScrollView>
+                          <Field
+                            label="Sabab"
+                            value={workspaceDraft.founderVoteReason}
+                            onChangeText={(v) => setWorkspaceDraft((prev) => ({ ...prev, founderVoteReason: v }))}
+                            placeholder="Masalan: 3 sprint davomida contribution yo'q"
+                            multiline
+                          />
+                          <Btn title="Founder vote ochish" small onPress={() => createFounderVote(selectedStartup.id)} />
+                        </>
+                      )}
+                    </View>
+
+                    <View style={styles.card}>
+                      <View style={styles.rowBetween}>
+                        <Text style={styles.cardTitle}>Investor introduction log</Text>
+                        <Badge label={String((selectedWorkspace?.investor_logs || []).length)} variant="active" />
+                      </View>
+                      {(selectedWorkspace?.investor_logs || []).length === 0 && (
+                        <Text style={styles.muted}>Hali investor intro logi yo'q.</Text>
+                      )}
+                      {(selectedWorkspace?.investor_logs || []).map((log) => (
+                        <View key={log.id} style={styles.task}>
+                          <View style={styles.rowBetween}>
+                            <Text style={styles.cardTitle}>{log.investor_name}</Text>
+                            <Badge label={log.outcome || "open"} variant={log.outcome === "funded" ? "success" : log.outcome === "rejected" ? "danger" : "default"} />
+                          </View>
+                          <Text style={styles.muted}>{log.contact || "-"}</Text>
+                          <Text style={styles.tinyMuted}>
+                            Stage: {log.stage || "intro"} • By: {log.introduced_by_name || "Unknown"}
+                          </Text>
+                          {canManageSelectedStartup && (
+                            <View style={styles.rowNoWrap}>
+                              <Btn title="Meeting" small type="secondary" onPress={() => setInvestorOutcome(selectedStartup.id, log.id, "meeting")} />
+                              <Btn title="Interested" small type="secondary" onPress={() => setInvestorOutcome(selectedStartup.id, log.id, "interested")} />
+                              <Btn title="Funded" small onPress={() => setInvestorOutcome(selectedStartup.id, log.id, "funded")} />
+                              <Btn title="Rejected" small type="danger" onPress={() => setInvestorOutcome(selectedStartup.id, log.id, "rejected")} />
+                            </View>
+                          )}
+                        </View>
+                      ))}
+                      {canManageSelectedStartup && (
+                        <>
+                          <Field
+                            label="Investor nomi"
+                            value={workspaceDraft.investorName}
+                            onChangeText={(v) => setWorkspaceDraft((prev) => ({ ...prev, investorName: v }))}
+                            placeholder="Seed Angels"
+                          />
+                          <Field
+                            label="Kontakt"
+                            value={workspaceDraft.investorContact}
+                            onChangeText={(v) => setWorkspaceDraft((prev) => ({ ...prev, investorContact: v }))}
+                            placeholder="email yoki telegram"
+                          />
+                          <Field
+                            label="Stage"
+                            value={workspaceDraft.investorStage}
+                            onChangeText={(v) => setWorkspaceDraft((prev) => ({ ...prev, investorStage: v }))}
+                            placeholder="intro / meeting / term-sheet"
+                          />
+                          <Field
+                            label="Izoh"
+                            value={workspaceDraft.investorNote}
+                            onChangeText={(v) => setWorkspaceDraft((prev) => ({ ...prev, investorNote: v }))}
+                            placeholder="Qisqa izoh"
+                            multiline
+                          />
+                          <Btn title="Investor log qo'shish" small onPress={() => addInvestorLog(selectedStartup.id)} />
+                        </>
+                      )}
+                    </View>
+
+                    <View style={styles.card}>
+                      <Text style={styles.cardTitle}>Success fee (platform monetizatsiyasi)</Text>
+                      <Text style={styles.muted}>Platforma success fee oralig'i: 1% - 3%</Text>
+                      {canManageSelectedStartup && (
+                        <>
+                          <Field
+                            label="Success fee %"
+                            value={workspaceDraft.successFeePercent}
+                            onChangeText={(v) => setWorkspaceDraft((prev) => ({ ...prev, successFeePercent: v }))}
+                            placeholder="2"
+                          />
+                          <Btn title="Success fee saqlash" small onPress={() => saveSuccessFee(selectedStartup.id)} />
+                        </>
+                      )}
+                    </View>
+                  </View>
+                )}
+
+                {activeDetailTab === "reputation" && (
+                  <View>
+                    <View style={styles.card}>
+                      <Text style={styles.cardTitle}>Reputatsiya grafigi</Text>
+                      <Text style={styles.muted}>Profil = real ishlangan loyihalar + real baholar.</Text>
+                      <View style={{ height: 8 }} />
+                      {selectedMemberReputation.map(({ member, reputation }) => (
+                        <View key={`rep_${member.user_id}`} style={styles.rowBetween}>
+                          <View style={{ flex: 1 }}>
+                            <Text style={styles.cardTitle}>{member.name}</Text>
+                            <Text style={styles.muted}>
+                              Score {reputation.score} ({reputation.tier}) • Task done {reputation.doneTasks}/{reputation.assignedTasks}
+                            </Text>
+                          </View>
+                          <Badge label={`#${reputation.score}`} variant={reputation.score >= 70 ? "success" : reputation.score >= 45 ? "default" : "danger"} />
+                        </View>
+                      ))}
+                    </View>
+
+                    <View style={styles.card}>
+                      <Text style={styles.cardTitle}>Hamkorlik edge'lari</Text>
+                      {(selectedCollaborationGraph.edges || []).length === 0 && (
+                        <Text style={styles.muted}>Hali collaboration edge shakllanmagan.</Text>
+                      )}
+                      {(selectedCollaborationGraph.edges || []).slice(0, 8).map((edge) => {
+                        const fromName = (selectedStartup.a_zolar || []).find((m) => m.user_id === edge.from)?.name || edge.from;
+                        const toName = (selectedStartup.a_zolar || []).find((m) => m.user_id === edge.to)?.name || edge.to;
+                        return (
+                          <View key={edge.id} style={styles.rowBetween}>
+                            <View style={{ flex: 1 }}>
+                              <Text style={styles.cardTitle}>{fromName} ↔ {toName}</Text>
+                              <Text style={styles.muted}>Shared {edge.shared_days} kun • Rating {edge.avg_rating}</Text>
+                            </View>
+                            <Badge label={`S ${edge.strength}`} variant={edge.strength >= 55 ? "success" : "default"} />
+                          </View>
+                        );
+                      })}
+                    </View>
+
+                    <View style={styles.card}>
+                      <Text style={styles.cardTitle}>Jamoa bahosi (peer review)</Text>
+                      {(selectedStartup.member_reviews || []).length === 0 && (
+                        <Text style={styles.muted}>Hali baholar yo'q.</Text>
+                      )}
+                      {(selectedStartup.member_reviews || []).slice(0, 14).map((review) => (
+                        <View key={review.id} style={styles.task}>
+                          <View style={styles.rowBetween}>
+                            <Text style={styles.cardTitle}>{review.reviewer_name} → {review.target_user_name}</Text>
+                            <Badge label={`${review.rating}/5`} variant={review.rating >= 4 ? "success" : review.rating >= 3 ? "default" : "danger"} />
+                          </View>
+                          <Text style={styles.muted}>{review.comment || "Izoh qoldirilmagan."}</Text>
+                          <Text style={styles.tinyMuted}>{new Date(review.created_at).toLocaleString()}</Text>
+                        </View>
+                      ))}
+                      {currentUser && canManageSelectedStartup && (
+                        <>
+                          <Text style={styles.label}>Kimga baho berasiz</Text>
+                          <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.chipsWrap}>
+                            {(selectedStartup.a_zolar || [])
+                              .filter((member) => member.user_id !== currentUser.id)
+                              .map((member) => (
+                                <TouchableOpacity
+                                  key={`review_target_${member.user_id}`}
+                                  onPress={() => setWorkspaceDraft((prev) => ({ ...prev, reviewTargetId: member.user_id }))}
+                                  style={[styles.chip, workspaceDraft.reviewTargetId === member.user_id && styles.chipActive]}
+                                >
+                                  <Text style={[styles.chipText, workspaceDraft.reviewTargetId === member.user_id && styles.chipTextActive]}>
+                                    {member.name}
+                                  </Text>
+                                </TouchableOpacity>
+                              ))}
+                          </ScrollView>
+                          <Field
+                            label="Reyting (1-5)"
+                            value={workspaceDraft.reviewRating}
+                            onChangeText={(v) => setWorkspaceDraft((prev) => ({ ...prev, reviewRating: v }))}
+                            placeholder="5"
+                          />
+                          <Field
+                            label="Izoh"
+                            value={workspaceDraft.reviewComment}
+                            onChangeText={(v) => setWorkspaceDraft((prev) => ({ ...prev, reviewComment: v }))}
+                            placeholder="Contribution bo'yicha fikr..."
+                            multiline
+                          />
+                          <Btn title="Baho yuborish" small onPress={() => submitMemberReview(selectedStartup.id)} />
+                        </>
+                      )}
+                    </View>
+                  </View>
+                )}
+
+                {activeDetailTab === "ai-engine" && (
+                  <View>
+                    <View style={styles.card}>
+                      <View style={styles.rowBetween}>
+                        <Text style={styles.cardTitle}>AI Decision Engine</Text>
+                        <Badge
+                          label={`Risk ${selectedAiInsight.riskScore}`}
+                          variant={selectedAiInsight.riskLevel === "high" ? "danger" : selectedAiInsight.riskLevel === "medium" ? "default" : "success"}
+                        />
+                      </View>
+                      <Text style={styles.muted}>
+                        Founder compatibility: {selectedAiInsight.founderCompatibility}% • Overdue ratio: {selectedAiInsight.overdueRatio}%
+                      </Text>
+                      <Text style={styles.muted}>
+                        Pending decision: {selectedAiInsight.pendingDecisions} • Founder vote: {selectedAiInsight.pendingFounderVotes} • Inactive: {selectedAiInsight.inactiveDays} kun
+                      </Text>
+                    </View>
+
+                    <View style={styles.card}>
+                      <Text style={styles.cardTitle}>Signal va ogohlantirishlar</Text>
+                      {(selectedAiInsight.warnings || []).map((warning) => (
+                        <View key={warning.code} style={styles.rowBetween}>
+                          <Text style={styles.muted}>{warning.text}</Text>
+                          <Badge label={warning.code} variant={warning.variant || "default"} />
+                        </View>
+                      ))}
+                    </View>
+
+                    <View style={styles.card}>
+                      <Text style={styles.cardTitle}>AI tavsiyalari</Text>
+                      {(selectedAiInsight.recommendations || []).map((item, index) => (
+                        <Text key={`ai_rec_${index}`} style={styles.muted}>
+                          {index + 1}. {item}
+                        </Text>
                       ))}
                     </View>
                   </View>
@@ -2080,6 +3181,38 @@ export default function App() {
                 <Text style={styles.statLabel}>Notiflar</Text>
               </View>
             </View>
+            {!!currentUserReputation && (
+              <View style={styles.card}>
+                <View style={styles.rowBetween}>
+                  <Text style={styles.cardTitle}>Reputatsiya profili</Text>
+                  <Badge
+                    label={`Score ${currentUserReputation.score}`}
+                    variant={currentUserReputation.score >= 70 ? "success" : currentUserReputation.score >= 45 ? "default" : "danger"}
+                  />
+                </View>
+                <Text style={styles.muted}>
+                  Tier: {currentUserReputation.tier} • Collaborator: {currentUserReputation.collaborators} • Ishlagan kun: {currentUserReputation.daysWorked}
+                </Text>
+                <Text style={styles.muted}>
+                  Task: {currentUserReputation.doneTasks}/{currentUserReputation.assignedTasks} done • Missed: {currentUserReputation.missedTasks}
+                </Text>
+                <Text style={styles.muted}>
+                  Review: {currentUserReputation.avgRating}/5 ({currentUserReputation.ratingsCount} ta)
+                </Text>
+                <View style={{ height: 8 }} />
+                {(currentUserReputation.history || []).slice(0, 6).map((item) => (
+                  <View key={`hist_${item.startup_id}`} style={styles.rowBetween}>
+                    <View style={{ flex: 1 }}>
+                      <Text style={styles.cardTitle}>{item.startup_name}</Text>
+                      <Text style={styles.tinyMuted}>
+                        {item.lifecycle} • completion {item.completion}% • task {item.tasks_done}/{item.tasks_total}
+                      </Text>
+                    </View>
+                    <Badge label={`${item.completion}%`} variant={item.completion >= 60 ? "success" : "default"} />
+                  </View>
+                ))}
+              </View>
+            )}
             <View style={styles.card}>
               <View style={styles.rowBetween}>
                 <Text style={styles.cardTitle}>GarajHub PRO</Text>
@@ -3051,7 +4184,7 @@ const lightStyles = StyleSheet.create({
     elevation: IS_ANDROID ? 0 : 3,
   },
   detailsLogo: { width: 74, height: 74, borderRadius: 14, backgroundColor: "#e6edff" },
-  detailTabsWrap: { flexDirection: "row", gap: 8, marginVertical: 8 },
+  detailTabsWrap: { flexDirection: "row", flexWrap: "wrap", gap: 8, marginVertical: 8 },
   detailTab: {
     borderWidth: 1,
     borderColor: "#d3dcef",
@@ -3701,10 +4834,3 @@ const darkThemeStyles = Object.keys({ ...lightStyles, ...darkStyles }).reduce((a
   return acc;
 }, {});
 let styles = lightStyles;
-
-
-
-
-
-
-
